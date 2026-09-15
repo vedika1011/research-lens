@@ -8,42 +8,14 @@ const groq = new Groq({
 const MODEL = 'openai/gpt-oss-120b';
 
 // ============================================================
-// RATE LIMIT CONTROL
+// HELPERS
 // ============================================================
-
-const MIN_REQUEST_INTERVAL = 12000;
-
-let lastRequestTime = 0;
-let requestQueue = Promise.resolve();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function queueGroqRequest(fn) {
-  const nextRequest = requestQueue.then(async () => {
-    const now = Date.now();
-    const elapsed = now - lastRequestTime;
-
-    if (elapsed < MIN_REQUEST_INTERVAL) {
-      await sleep(MIN_REQUEST_INTERVAL - elapsed);
-    }
-
-    lastRequestTime = Date.now();
-
-    return fn();
-  });
-
-  requestQueue = nextRequest.catch(() => { });
-
-  return nextRequest;
-}
-
-// ============================================================
-// TEXT CONTROL
-// ============================================================
-
-function truncateText(text, maxChars = 3500) {
+function truncateText(text, maxChars = 2200) {
   if (!text || text.length <= maxChars) {
     return text || '';
   }
@@ -52,7 +24,7 @@ function truncateText(text, maxChars = 3500) {
 
   return (
     text.substring(0, half) +
-    '\n\n...[TRUNCATED MIDDLE]...\n\n' +
+    '\n\n...[TRUNCATED]...\n\n' +
     text.substring(text.length - half)
   );
 }
@@ -65,288 +37,248 @@ function compactPaperAnalyses(paperAnalyses) {
   return paperAnalyses.map((paper) => ({
     filename: paper.filename || '',
     title: paper.title || '',
-    researchProblem: truncateText(
-      paper.researchProblem,
-      700
-    ),
-    methodology: truncateText(
-      paper.methodology,
-      700
-    ),
-    dataset: truncateText(
-      paper.dataset,
-      400
-    ),
+
+    researchProblem: paper.researchProblem || '',
+
+    methodology: paper.methodology || '',
+
+    dataset: paper.dataset || '',
+
     keyFindings: Array.isArray(paper.keyFindings)
-      ? paper.keyFindings
-        .slice(0, 4)
-        .map((item) => truncateText(item, 400))
+      ? paper.keyFindings.slice(0, 4)
       : [],
+
     evaluationMetrics: Array.isArray(
       paper.evaluationMetrics
     )
       ? paper.evaluationMetrics.slice(0, 5)
       : [],
+
     limitations: Array.isArray(paper.limitations)
-      ? paper.limitations
-        .slice(0, 5)
-        .map((item) => truncateText(item, 400))
+      ? paper.limitations.slice(0, 5)
       : [],
-    relevantQuote: truncateText(
-      paper.relevantQuote,
-      500
-    )
+
+    relevantQuote: paper.relevantQuote || ''
   }));
 }
 
 // ============================================================
-// GROQ CALL
+// ONE GROQ REQUEST
 // ============================================================
 
-async function callGroqWithRetry(
+async function callGroq(
   systemPrompt,
   userPrompt,
   jsonSchema,
-  retries = 1,
-  extraParams = {}
+  maxCompletionTokens = 3000
 ) {
-  let attempt = 0;
+  try {
+    console.log('Sending request to Groq...');
 
-  while (attempt <= retries) {
-    try {
-      const completion = await queueGroqRequest(() =>
-        groq.chat.completions.create({
-          messages: [
-            {
-              role: 'system',
-              content: systemPrompt
-            },
-            {
-              role: 'user',
-              content: userPrompt
-            }
-          ],
-
-          model: MODEL,
-
-          response_format: {
-            type: 'json_schema',
-            json_schema: jsonSchema
+    const completion =
+      await groq.chat.completions.create({
+        messages: [
+          {
+            role: 'system',
+            content: systemPrompt
           },
+          {
+            role: 'user',
+            content: userPrompt
+          }
+        ],
 
-          ...extraParams
-        })
+        model: MODEL,
+
+        response_format: {
+          type: 'json_schema',
+          json_schema: jsonSchema
+        },
+
+        reasoning_effort: 'low',
+
+        max_completion_tokens:
+          maxCompletionTokens
+      });
+
+    const responseText =
+      completion.choices[0]?.message?.content ||
+      '{}';
+
+    return JSON.parse(responseText);
+
+  } catch (err) {
+    console.error(
+      'Groq error:',
+      err?.message || err
+    );
+
+    if (
+      err?.status === 429 ||
+      err?.code === 429 ||
+      err?.error?.code === 'rate_limit_exceeded'
+    ) {
+      throw new Error(
+        'Analysis is temporarily rate-limited. Please wait about a minute and try again.'
       );
-
-      const responseText =
-        completion.choices[0]?.message?.content || '{}';
-
-      return JSON.parse(responseText);
-
-    } catch (err) {
-      const isRateLimit =
-        err &&
-        (
-          err.status === 429 ||
-          err.code === 429 ||
-          err.error?.code === 'rate_limit_exceeded'
-        );
-
-      if (isRateLimit) {
-        console.error('Groq rate limit reached.');
-
-        if (attempt < retries) {
-          console.log(
-            'Waiting 30 seconds before retrying...'
-          );
-
-          await sleep(30000);
-
-          attempt++;
-          continue;
-        }
-
-        throw new Error(
-          'Analysis is temporarily rate-limited. Please wait about a minute and try again.'
-        );
-      }
-
-      attempt++;
-
-      console.error(
-        `LLM Call failed on attempt ${attempt}:`,
-        err?.message || err
-      );
-
-      if (attempt > retries) {
-        throw new Error(
-          'LLM call failed: ' +
-          (err?.message || 'Unknown error')
-        );
-      }
-
-      await sleep(3000);
     }
+
+    throw new Error(
+      err?.message ||
+      'Groq analysis failed.'
+    );
   }
 }
 
 // ============================================================
-// PAPER ANALYSIS
+// MAIN ANALYSIS
+// ONE CALL FOR EVERYTHING
 // ============================================================
 
-async function analyzePaper(topic, paper) {
-  const truncatedText = truncateText(
-    paper.extractedText,
-    3500
-  );
-
-  const systemPrompt = `
-You are a strict academic research assistant.
-
-Analyze the provided paper relative to:
-"${topic}"
-
-Use only information supported by the provided paper text.
-
-Do not invent findings, datasets, limitations, metrics,
-or quotations.
-
-Return a concise structured analysis.
-`;
-
-  const schema = {
-    name: 'PaperAnalysis',
-
-    schema: {
-      type: 'object',
-
-      properties: {
-        filename: {
-          type: 'string'
-        },
-
-        title: {
-          type: 'string'
-        },
-
-        researchProblem: {
-          type: 'string'
-        },
-
-        methodology: {
-          type: 'string'
-        },
-
-        dataset: {
-          type: 'string'
-        },
-
-        keyFindings: {
-          type: 'array',
-          items: {
-            type: 'string'
-          }
-        },
-
-        evaluationMetrics: {
-          type: 'array',
-          items: {
-            type: 'string'
-          }
-        },
-
-        limitations: {
-          type: 'array',
-          items: {
-            type: 'string'
-          }
-        },
-
-        relevantQuote: {
-          type: 'string'
-        }
-      },
-
-      required: [
-        'filename',
-        'title',
-        'researchProblem',
-        'methodology',
-        'dataset',
-        'keyFindings',
-        'evaluationMetrics',
-        'limitations',
-        'relevantQuote'
-      ]
-    }
-  };
-
-  return await callGroqWithRetry(
-    systemPrompt,
-
-    `Paper filename: ${paper.filename}
-
-Paper text:
-${truncatedText}`,
-
-    schema,
-
-    1,
-
-    {
-      reasoning_effort: 'low',
-      max_completion_tokens: 1000
-    }
-  );
-}
-
-// ============================================================
-// COMBINED RESEARCH SYNTHESIS
-// ============================================================
-
-async function synthesizeResearch(
+async function analyzeResearch(
   topic,
-  paperAnalyses
+  papers
 ) {
-  const compactAnalyses =
-    compactPaperAnalyses(paperAnalyses);
+  const paperInputs = papers.map(
+    (paper, index) => ({
+      paperNumber: index + 1,
+
+      filename: paper.filename,
+
+      text: truncateText(
+        paper.extractedText,
+        2200
+      )
+    })
+  );
 
   const systemPrompt = `
-You are a strict academic research synthesis assistant.
+You are ResearchLens, a strict academic research analysis assistant.
 
-Research topic:
+The user has provided several research papers about:
+
 "${topic}"
 
-You are given structured analyses of research papers.
+Analyze ALL provided papers in ONE response.
 
-Using ONLY those analyses, produce:
+Your response must contain:
 
-1. Research landscape
-2. Research gaps
-3. Contradictions
-4. Research opportunities
+1. Individual paper analyses
+2. Research landscape
+3. Research gaps
+4. Contradictions
+5. Research opportunities
 
-All findings must be grounded in the supplied papers.
+IMPORTANT RULES:
 
-Do not invent evidence.
+- Use ONLY information present in the supplied paper text.
+- Do not invent facts.
+- Do not invent datasets.
+- Do not invent results.
+- Do not invent quotations.
+- Do not force contradictions.
+- If there is no meaningful contradiction, return an empty contradictions array.
+- Research gaps must be grounded in the supplied papers.
+- Research opportunities must be based on the identified gaps.
+- Evidence must identify the relevant paper filename.
+- Keep the response concise and useful.
+- Do not claim that any opportunity is guaranteed to be novel.
 
-Do not force contradictions.
+For each paper identify:
+- title
+- research problem
+- methodology
+- dataset
+- key findings
+- evaluation metrics
+- limitations
+- one short relevant quote if available
 
-If no meaningful contradiction exists, return an empty
-contradictions array.
+For the landscape identify:
+- overall summary
+- common themes
+- diverging approaches
 
-Research opportunities must be based on the identified gaps.
-
-Do not claim that any opportunity is guaranteed to be novel.
+For opportunities provide 3 concrete research directions.
 `;
 
   const schema = {
-    name: 'ResearchSynthesis',
+    name: 'CompleteResearchAnalysis',
 
     schema: {
       type: 'object',
 
       properties: {
+        papers: {
+          type: 'array',
+
+          items: {
+            type: 'object',
+
+            properties: {
+              filename: {
+                type: 'string'
+              },
+
+              title: {
+                type: 'string'
+              },
+
+              researchProblem: {
+                type: 'string'
+              },
+
+              methodology: {
+                type: 'string'
+              },
+
+              dataset: {
+                type: 'string'
+              },
+
+              keyFindings: {
+                type: 'array',
+
+                items: {
+                  type: 'string'
+                }
+              },
+
+              evaluationMetrics: {
+                type: 'array',
+
+                items: {
+                  type: 'string'
+                }
+              },
+
+              limitations: {
+                type: 'array',
+
+                items: {
+                  type: 'string'
+                }
+              },
+
+              relevantQuote: {
+                type: 'string'
+              }
+            },
+
+            required: [
+              'filename',
+              'title',
+              'researchProblem',
+              'methodology',
+              'dataset',
+              'keyFindings',
+              'evaluationMetrics',
+              'limitations',
+              'relevantQuote'
+            ]
+          }
+        },
+
         landscape: {
           type: 'object',
 
@@ -357,6 +289,7 @@ Do not claim that any opportunity is guaranteed to be novel.
 
             commonThemes: {
               type: 'array',
+
               items: {
                 type: 'string'
               }
@@ -364,6 +297,7 @@ Do not claim that any opportunity is guaranteed to be novel.
 
             divergingApproaches: {
               type: 'array',
+
               items: {
                 type: 'string'
               }
@@ -383,13 +317,16 @@ Do not claim that any opportunity is guaranteed to be novel.
           properties: {
             gaps: {
               type: 'array',
+
               items: {
                 type: 'string'
               }
             }
           },
 
-          required: ['gaps']
+          required: [
+            'gaps'
+          ]
         },
 
         contradictions: {
@@ -398,13 +335,16 @@ Do not claim that any opportunity is guaranteed to be novel.
           properties: {
             contradictions: {
               type: 'array',
+
               items: {
                 type: 'string'
               }
             }
           },
 
-          required: ['contradictions']
+          required: [
+            'contradictions'
+          ]
         },
 
         opportunities: {
@@ -436,6 +376,7 @@ Do not claim that any opportunity is guaranteed to be novel.
 
                   basedOnGaps: {
                     type: 'array',
+
                     items: {
                       type: 'string'
                     }
@@ -474,41 +415,49 @@ Do not claim that any opportunity is guaranteed to be novel.
                   'evidence'
                 ]
               }
-            }
-          },
+            ]
+},
 
-          required: ['opportunities']
+required: [
+  'opportunities'
+]
         }
       },
 
-      required: [
-        'landscape',
-        'gaps',
-        'contradictions',
-        'opportunities'
-      ]
+required: [
+  'papers',
+  'landscape',
+  'gaps',
+  'contradictions',
+  'opportunities'
+]
     }
   };
 
-  return await callGroqWithRetry(
-    systemPrompt,
+return await callGroq(
+  systemPrompt,
 
-    `Paper analyses:
-${JSON.stringify(compactAnalyses)}`,
+  `Research topic:
 
-    schema,
+${topic}
 
-    1,
+Papers:
 
-    {
-      reasoning_effort: 'low',
-      max_completion_tokens: 1600
-    }
-  );
+${JSON.stringify(
+    paperInputs,
+    null,
+    2
+  )}`,
+
+  schema,
+
+  3000
+);
 }
 
 // ============================================================
 // CHALLENGE MY IDEA
+// ONE SEPARATE CALL
 // ============================================================
 
 async function challengeIdea(
@@ -527,43 +476,44 @@ async function challengeIdea(
   }
 
   const compactAnalyses =
-    compactPaperAnalyses(paperAnalyses);
-
-  const compactLandscape = {
-    landscapeSummary:
-      landscape?.landscapeSummary || '',
-
-    commonThemes:
-      landscape?.commonThemes || [],
-
-    divergingApproaches:
-      landscape?.divergingApproaches || []
-  };
+    compactPaperAnalyses(
+      paperAnalyses
+    );
 
   const systemPrompt = `
 You are a research assistant.
 
-Compare the user's research idea against ONLY the
-uploaded paper analyses and research landscape.
+Compare the user's proposed research idea against ONLY
+the uploaded paper analyses and research landscape.
 
-Assess overlap with existing work.
+Identify:
 
-Identify overlapping papers and explain the overlap.
+- overlap with existing papers
+- specific overlapping papers
+- specific overlap points
+- relative novelty assessment
+- reasoning
+- ways to differentiate the idea
 
-Assign noveltyScore as high, medium, or low.
+The novelty assessment is ONLY relative to the uploaded papers.
 
-This is only a comparison against the uploaded papers.
 Do not claim universal novelty.
 
-Suggest concrete ways to differentiate the idea.
+Do not invent overlap.
 `;
 
-  const userPayload = JSON.stringify({
-    topic,
-    paperAnalyses: compactAnalyses,
-    landscape: compactLandscape,
-    ideaText
-  });
+  const userPayload =
+    JSON.stringify(
+      {
+        topic,
+        paperAnalyses:
+          compactAnalyses,
+        landscape,
+        ideaText
+      },
+      null,
+      2
+    );
 
   const schema = {
     name: 'ChallengeIdea',
@@ -632,15 +582,11 @@ Suggest concrete ways to differentiate the idea.
     }
   };
 
-  return await callGroqWithRetry(
+  return await callGroq(
     systemPrompt,
     userPayload,
     schema,
-    1,
-    {
-      reasoning_effort: 'low',
-      max_completion_tokens: 1000
-    }
+    1200
   );
 }
 
@@ -649,7 +595,6 @@ Suggest concrete ways to differentiate the idea.
 // ============================================================
 
 module.exports = {
-  analyzePaper,
-  synthesizeResearch,
+  analyzeResearch,
   challengeIdea
 };

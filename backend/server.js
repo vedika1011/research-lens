@@ -5,14 +5,14 @@ const pdfParse = require('pdf-parse');
 require('dotenv').config();
 
 const {
-  analyzePaper,
-  synthesizeResearch,
+  analyzeResearch,
   challengeIdea
 } = require('./llmService');
 
 const app = express();
 
-const port = process.env.PORT || 3001;
+const port =
+  process.env.PORT || 3001;
 
 // ============================================================
 // MIDDLEWARE
@@ -34,7 +34,9 @@ const upload = multer({
   storage: multer.memoryStorage(),
 
   limits: {
-    fileSize: 15 * 1024 * 1024,
+    fileSize:
+      15 * 1024 * 1024,
+
     files: 5
   }
 });
@@ -43,27 +45,34 @@ const upload = multer({
 // HEALTH CHECK
 // ============================================================
 
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'ResearchLens backend'
-  });
-});
+app.get(
+  '/api/health',
+  (req, res) => {
+    res.json({
+      status: 'ok',
+      service:
+        'ResearchLens backend'
+    });
+  }
+);
 
 // ============================================================
-// STEP 1: UPLOAD + PDF EXTRACTION
+// UPLOAD + PDF EXTRACTION
 // ============================================================
 
 app.post(
   '/api/upload',
   upload.array('files', 5),
+
   async (req, res) => {
     try {
-      const topic = req.body.topic;
+      const topic =
+        req.body.topic;
 
       if (!topic) {
         return res.status(400).json({
-          error: 'Topic is required.'
+          error:
+            'Topic is required.'
         });
       }
 
@@ -72,17 +81,25 @@ app.post(
         req.files.length === 0
       ) {
         return res.status(400).json({
-          error: 'At least one PDF file is required.'
+          error:
+            'At least one PDF file is required.'
         });
       }
 
       const papers = [];
 
-      for (const file of req.files) {
+      for (
+        const file of req.files
+      ) {
         const paperData = {
-          filename: file.originalname,
+          filename:
+            file.originalname,
+
           pageCount: 0,
-          extractedText: null,
+
+          extractedText:
+            null,
+
           error: null
         };
 
@@ -93,13 +110,18 @@ app.post(
           paperData.error =
             'Invalid file type. Only PDFs are allowed.';
 
-          papers.push(paperData);
+          papers.push(
+            paperData
+          );
+
           continue;
         }
 
         try {
           const data =
-            await pdfParse(file.buffer);
+            await pdfParse(
+              file.buffer
+            );
 
           paperData.extractedText =
             data.text;
@@ -117,7 +139,9 @@ app.post(
             'Failed to extract text from this PDF.';
         }
 
-        papers.push(paperData);
+        papers.push(
+          paperData
+        );
       }
 
       return res.json({
@@ -140,11 +164,13 @@ app.post(
 );
 
 // ============================================================
-// STEP 2: PAPER ANALYSIS + COMPLETE SYNTHESIS
+// COMPLETE RESEARCH ANALYSIS
+// ONE GROQ CALL
 // ============================================================
 
 app.post(
   '/api/analyze',
+
   async (req, res) => {
     try {
       const {
@@ -165,9 +191,9 @@ app.post(
 
       const validPapers =
         papers.filter(
-          (p) =>
-            !p.error &&
-            p.extractedText
+          (paper) =>
+            !paper.error &&
+            paper.extractedText
         );
 
       if (
@@ -179,131 +205,89 @@ app.post(
         });
       }
 
+      console.log(
+        `Starting analysis of ${validPapers.length} paper(s)...`
+      );
+
       // ========================================================
-      // PAPER ANALYSIS
+      // ONE AI CALL
       // ========================================================
 
-      const analyzedValidPapers = [];
+      let analysisResult;
 
-      // IMPORTANT:
-      // Process papers sequentially rather than in parallel.
-      // This prevents a burst of Groq requests.
-
-      for (
-        const paper of validPapers
-      ) {
-        try {
-          console.log(
-            `Analyzing paper: ${paper.filename}`
+      try {
+        analysisResult =
+          await analyzeResearch(
+            topic,
+            validPapers
           );
 
-          const analysis =
-            await analyzePaper(
-              topic,
-              paper
-            );
+      } catch (err) {
+        console.error(
+          'Research analysis failed:',
+          err
+        );
 
-          analyzedValidPapers.push({
-            ...paper,
-            analysis,
-            llmError: null
-          });
-
-        } catch (err) {
-          console.error(
-            `Analysis failed for ${paper.filename}:`,
-            err.message
-          );
-
-          analyzedValidPapers.push({
-            ...paper,
-            analysis: null,
-            llmError: err.message
-          });
-        }
+        return res.status(500).json({
+          error: err.message
+        });
       }
 
       // ========================================================
-      // COMBINE PAPER RESULTS
+      // MATCH AI RESULTS TO UPLOADED PAPERS
       // ========================================================
 
-      const allAnalyzedPapers =
-        papers.map((p) => {
-          if (
-            p.error ||
-            !p.extractedText
-          ) {
+      const analyzedPapers =
+        papers.map(
+          (paper) => {
+            const aiAnalysis =
+              analysisResult.papers?.find(
+                (result) =>
+                  result.filename ===
+                  paper.filename
+              );
+
+            if (
+              aiAnalysis
+            ) {
+              return {
+                ...paper,
+                analysis:
+                  aiAnalysis,
+                llmError:
+                  null
+              };
+            }
+
+            if (
+              paper.error ||
+              !paper.extractedText
+            ) {
+              return {
+                ...paper,
+                analysis:
+                  null,
+                llmError:
+                  null
+              };
+            }
+
             return {
-              ...p,
-              analysis: null,
-              llmError: null
+              ...paper,
+              analysis:
+                null,
+              llmError:
+                'No analysis returned for this paper.'
             };
           }
-
-          const matched =
-            analyzedValidPapers.find(
-              (ap) =>
-                ap.filename ===
-                p.filename
-            );
-
-          return matched || p;
-        });
-
-      const successfulAnalyses =
-        analyzedValidPapers
-          .filter(
-            (p) =>
-              !p.llmError &&
-              p.analysis
-          )
-          .map(
-            (p) => p.analysis
-          );
+        );
 
       // ========================================================
-      // ONE COMBINED SYNTHESIS CALL
-      // ========================================================
-
-      let synthesis = null;
-      let synthesisError = null;
-
-      if (
-        successfulAnalyses.length > 0
-      ) {
-        try {
-          console.log(
-            'Generating combined research synthesis...'
-          );
-
-          synthesis =
-            await synthesizeResearch(
-              topic,
-              successfulAnalyses
-            );
-
-        } catch (err) {
-          console.error(
-            'Research synthesis failed:',
-            err
-          );
-
-          synthesisError =
-            'Failed to generate research synthesis: ' +
-            err.message;
-        }
-
-      } else {
-        synthesisError =
-          'Could not generate research synthesis because all paper analyses failed.';
-      }
-
-      // ========================================================
-      // REMOVE RAW PDF TEXT FROM RESPONSE
+      // REMOVE RAW TEXT
       // ========================================================
 
       const cleanPapers =
-        allAnalyzedPapers.map(
+        analyzedPapers.map(
           ({
             extractedText,
             ...rest
@@ -311,29 +295,29 @@ app.post(
         );
 
       // ========================================================
-      // RESPONSE
+      // RETURN EVERYTHING
       // ========================================================
 
       return res.json({
         topic,
 
         landscape:
-          synthesis?.landscape ||
+          analysisResult.landscape ||
           null,
 
         landscapeError:
-          synthesisError,
+          null,
 
         gaps:
-          synthesis?.gaps ||
+          analysisResult.gaps ||
           null,
 
         contradictions:
-          synthesis?.contradictions ||
+          analysisResult.contradictions ||
           null,
 
         opportunities:
-          synthesis?.opportunities ||
+          analysisResult.opportunities ||
           null,
 
         papers:
@@ -360,6 +344,7 @@ app.post(
 
 app.post(
   '/api/challenge',
+
   async (req, res) => {
     try {
       const {
@@ -388,7 +373,9 @@ app.post(
           ideaText
         );
 
-      return res.json(result);
+      return res.json(
+        result
+      );
 
     } catch (error) {
       console.error(

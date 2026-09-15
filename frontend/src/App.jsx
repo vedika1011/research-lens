@@ -1,4 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, {
+  useState,
+  useEffect
+} from 'react';
+
 import InputScreen from './components/InputScreen';
 import ResultsScreen from './components/ResultsScreen';
 
@@ -34,12 +38,17 @@ function App() {
     useState(null);
 
   // ==========================================================
-  // SCROLL TO TOP WHEN RESULTS APPEAR
+  // SCROLL TO TOP
   // ==========================================================
 
   useEffect(() => {
-    if (appState === 'results') {
-      window.scrollTo(0, 0);
+    if (
+      appState === 'results'
+    ) {
+      window.scrollTo(
+        0,
+        0
+      );
     }
   }, [appState]);
 
@@ -48,7 +57,10 @@ function App() {
   // ==========================================================
 
   const handleAnalyze =
-    async (topic, files) => {
+    async (
+      topic,
+      files
+    ) => {
       setAppState(
         'loading-extract'
       );
@@ -63,24 +75,29 @@ function App() {
         topic
       );
 
-      files.forEach((file) => {
-        formData.append(
-          'files',
-          file
-        );
-      });
+      files.forEach(
+        (file) => {
+          formData.append(
+            'files',
+            file
+          );
+        }
+      );
 
       try {
         // ======================================================
-        // STEP 1: UPLOAD + EXTRACT PDF TEXT
+        // STEP 1: UPLOAD
         // ======================================================
 
         const uploadResponse =
           await fetch(
             `${API_URL}/api/upload`,
             {
-              method: 'POST',
-              body: formData
+              method:
+                'POST',
+
+              body:
+                formData
             }
           );
 
@@ -100,7 +117,7 @@ function App() {
           await uploadResponse.json();
 
         // ======================================================
-        // STEP 2: PAPER ANALYSIS + COMPLETE SYNTHESIS
+        // STEP 2: ONE COMPLETE AI ANALYSIS
         // ======================================================
 
         setAppState(
@@ -111,7 +128,8 @@ function App() {
           await fetch(
             `${API_URL}/api/analyze`,
             {
-              method: 'POST',
+              method:
+                'POST',
 
               headers: {
                 'Content-Type':
@@ -141,7 +159,7 @@ function App() {
           await analyzeResponse.json();
 
         // ======================================================
-        // STORE COMPLETE RESULTS
+        // STORE RESULTS
         // ======================================================
 
         setResults(
@@ -163,7 +181,6 @@ function App() {
           null
         );
 
-        // Clear previous challenge result
         setChallengeResult(
           null
         );
@@ -200,7 +217,9 @@ function App() {
   // ==========================================================
 
   const handleChallenge =
-    async (ideaText) => {
+    async (
+      ideaText
+    ) => {
       if (
         !ideaText ||
         ideaText
@@ -228,7 +247,8 @@ function App() {
           await fetch(
             `${API_URL}/api/challenge`,
             {
-              method: 'POST',
+              method:
+                'POST',
 
               headers: {
                 'Content-Type':
@@ -247,7 +267,9 @@ function App() {
                   paperAnalyses:
                     results?.papers
                       ?.map(
-                        (paper) =>
+                        (
+                          paper
+                        ) =>
                           paper.analysis
                       )
                       .filter(
@@ -338,7 +360,7 @@ function App() {
     };
 
   // ==========================================================
-  // LOADING STATE
+  // LOADING
   // ==========================================================
 
   const isLoading =
@@ -378,9 +400,11 @@ function App() {
             onAnalyze={
               handleAnalyze
             }
+
             isLoading={
               isLoading
             }
+
             loadingMessage={
               loadingMessage
             }
