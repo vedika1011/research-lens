@@ -87,12 +87,14 @@ To deploy your own instance:
 3. Set the `GROQ_API_KEY` environment variable in the Vercel project settings
 4. Deploy
 
-## Project structure
+## Project Structure
 
+```text
 research-lens/
-├── frontend/ React + Tailwind app
-├── backend/ Express API, PDF extraction, Groq integration
-└── README.md
+ ├── frontend/     React + Tailwind app
+ ├── backend/      Express API, PDF extraction, Groq integration
+ └── README.md
+```
 
 
 ## Notes
