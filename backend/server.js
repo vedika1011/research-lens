@@ -11,7 +11,7 @@ const port = process.env.PORT || 3001;
 
 app.use(cors());
 // Increased limit because extractedText arrays can be large
-app.use(express.json({ limit: '50mb' })); 
+app.use(express.json({ limit: '50mb' }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -24,11 +24,11 @@ const upload = multer({
 app.post('/api/upload', upload.array('files', 5), async (req, res) => {
   try {
     const topic = req.body.topic;
-    
+
     if (!topic) {
       return res.status(400).json({ error: 'Topic is required.' });
     }
-    
+
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'At least one PDF file is required.' });
     }
@@ -78,20 +78,20 @@ app.post('/api/analyze', async (req, res) => {
 
     // Filter out papers that already failed in the upload stage
     const validPapers = papers.filter(p => !p.error && p.extractedText);
-    
+
     if (validPapers.length === 0) {
       return res.status(400).json({ error: 'No valid text to analyze from the provided papers.' });
     }
 
     // 1. Analyze each paper in parallel
-    const analysisPromises = validPapers.map(paper => 
+    const analysisPromises = validPapers.map(paper =>
       analyzePaper(topic, paper)
         .then(analysis => ({ ...paper, analysis, llmError: null }))
         .catch(err => ({ ...paper, analysis: null, llmError: err.message }))
     );
 
     const analyzedValidPapers = await Promise.all(analysisPromises);
-    
+
     // Combine with initially invalid papers
     const allAnalyzedPapers = papers.map(p => {
       if (p.error || !p.extractedText) return { ...p, analysis: null, llmError: null };
@@ -190,4 +190,6 @@ app.post('/api/challenge', async (req, res) => {
     return res.status(500).json({ error: 'Internal server error during challenge processing.' });
   }
 });
-app.listen(port, () => console.log(`Backend server running on port ${port}`));
+app.listen(port, '0.0.0.0', () =>
+  console.log(`Backend server running on port ${port}`)
+);
