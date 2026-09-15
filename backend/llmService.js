@@ -130,12 +130,80 @@ async function extractContradictions(topic, paperAnalyses) {
       required: ["contradictions"]
     }
   };
-  return await callGroqWithRetry(systemPrompt, `Topic: ${topic}\n\nPaper Analyses:\n${JSON.stringify(paperAnalyses, null, 2)}`, schema);
+  return await callGroqWithRetry(systemPrompt, `Topic: ${topic}\n\nPaper Analyses:\n${JSON.stringify(paperAnalyses, null, 2)}`, schema, 1, { reasoning_effort: "low", max_completion_tokens: 1000 });
+}
+
+async function extractOpportunities(topic, paperAnalyses, landscape, gaps, contradictions) {
+  const systemPrompt = `You are a research assistant. Given the research topic, an array of paper analyses, the synthesized landscape, identified gaps, and contradictions, generate 3-5 concrete research opportunities. Each must include title, description, research question, why it matters, related gaps, and supporting evidence from papers.`;
+  const schema = {
+    name: "OpportunitiesExtraction",
+    schema: {
+      type: "object",
+      properties: {
+        opportunities: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              description: { type: "string" },
+              researchQuestion: { type: "string" },
+              whyItMatters: { type: "string" },
+              basedOnGaps: { type: "array", items: { type: "string" } },
+              evidence: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    filename: { type: "string" },
+                    supportingPoint: { type: "string" }
+                  },
+                  required: ["filename", "supportingPoint"]
+                }
+              }
+            },
+            required: ["title", "description", "researchQuestion", "whyItMatters", "basedOnGaps", "evidence"]
+          }
+        }
+      },
+      required: ["opportunities"]
+    }
+  };
+  const userPayload = JSON.stringify({ topic, paperAnalyses, landscape, gaps, contradictions }, null, 2);
+  return await callGroqWithRetry(systemPrompt, userPayload, schema, 1, { reasoning_effort: "low", max_completion_tokens: 1500 });
+}
+
+async function challengeIdea(topic, paperAnalyses, landscape, ideaText) {
+  if (!ideaText || ideaText.trim().split(/\s+/).length < 10) {
+    throw new Error('Idea text too short. Provide a more detailed description.');
+  }
+  const systemPrompt = `You are a research assistant. Given the research topic, the set of paper analyses, the synthesized landscape, and a user-provided research idea, assess how much the idea overlaps with existing work, list overlapping papers with specific points, assign a novelty score (high|medium|low) based only on these papers, provide reasoning, and suggest 2-4 concrete ways to differentiate the idea. Return strict JSON as specified.`;
+  const userPayload = JSON.stringify({ topic, paperAnalyses, landscape, ideaText }, null, 2);
+  const schema = {
+    name: "ChallengeIdea",
+    schema: {
+      type: "object",
+      properties: {
+        overlapAssessment: { type: "string" },
+        overlappingPapers: {
+          type: "array",
+          items: { type: "object", properties: { filename: { type: "string" }, overlapPoint: { type: "string" } }, required: ["filename", "overlapPoint"] }
+        },
+        noveltyScore: { type: "string", enum: ["high", "medium", "low"] },
+        noveltyReasoning: { type: "string" },
+        differentiationSuggestions: { type: "array", items: { type: "string" } }
+      },
+      required: ["overlapAssessment", "overlappingPapers", "noveltyScore", "noveltyReasoning", "differentiationSuggestions"]
+    }
+  };
+  return await callGroqWithRetry(systemPrompt, userPayload, schema, 1, { reasoning_effort: "low", max_completion_tokens: 1500 });
 }
 
 module.exports = {
   analyzePaper,
   synthesizeLandscape,
   extractGaps,
-  extractContradictions
+  extractContradictions,
+  extractOpportunities,
+  challengeIdea
 };

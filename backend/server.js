@@ -163,4 +163,31 @@ app.post('/api/contradictions', async (req, res) => {
   }
 });
 
+app.post('/api/opportunities', async (req, res) => {
+  try {
+    const { topic, paperAnalyses, landscape, gaps, contradictions } = req.body;
+    if (!topic || !paperAnalyses) {
+      return res.status(400).json({ error: 'Topic and paperAnalyses are required.' });
+    }
+    const result = await require('./llmService').extractOpportunities(topic, paperAnalyses, landscape, gaps, contradictions);
+    return res.json(result);
+  } catch (error) {
+    console.error('Opportunities endpoint error:', error);
+    return res.status(500).json({ error: 'Internal server error during opportunities extraction.' });
+  }
+});
+
+app.post('/api/challenge', async (req, res) => {
+  try {
+    const { topic, paperAnalyses, landscape, ideaText } = req.body;
+    if (!topic || !paperAnalyses || !ideaText) {
+      return res.status(400).json({ error: 'Topic, paperAnalyses, and ideaText are required.' });
+    }
+    const result = await require('./llmService').challengeIdea(topic, paperAnalyses, landscape, ideaText);
+    return res.json(result);
+  } catch (error) {
+    console.error('Challenge endpoint error:', error);
+    return res.status(500).json({ error: 'Internal server error during challenge processing.' });
+  }
+});
 app.listen(port, () => console.log(`Backend server running on port ${port}`));
