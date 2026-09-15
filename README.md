@@ -25,7 +25,7 @@ Papers -> Analysis -> Landscape -> Gaps -> Contradictions -> Opportunities -> Yo
 
 - Frontend: React, Tailwind CSS
 - Backend: Node.js, Express
-- LLM: Groq API (openai/gpt-oss-120b)
+- LLM: Gemini API 
 - PDF extraction: pdf-parse
 - Deployment: Vercel
 
@@ -34,7 +34,7 @@ Papers -> Analysis -> Landscape -> Gaps -> Contradictions -> Opportunities -> Yo
 ### Prerequisites
 
 - Node.js 18 or later
-- A Groq API key
+- A Gemini API key
 
 ### Setup
 
@@ -61,7 +61,7 @@ npm install
 
 Create a `.env` file in `/backend`:
 
-GROQ_API_KEY=your_groq_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 
 
 4. Run locally
@@ -84,7 +84,7 @@ To deploy your own instance:
 
 1. Push the repository to GitHub
 2. Import the project into Vercel
-3. Set the `GROQ_API_KEY` environment variable in the Vercel project settings
+3. Set the `GEMINI_API_KEY` environment variable in the Vercel project settings
 4. Deploy
 
 ## Project Structure
@@ -92,7 +92,7 @@ To deploy your own instance:
 ```text
 research-lens/
  ├── frontend/     React + Tailwind app
- ├── backend/      Express API, PDF extraction, Groq integration
+ ├── backend/      Express API, PDF extraction, Gemini integration
  └── README.md
 ```
 
