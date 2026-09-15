@@ -43,9 +43,9 @@ export default function InputScreen({
           HERO
       ====================================================== */}
 
-      <section className="w-full px-8 md:px-12 lg:px-16 xl:px-20 pt-20 md:pt-24 pb-24">
+      <section className="w-full px-8 md:px-12 lg:px-16 xl:px-20 pt-16 md:pt-20 pb-12">
 
-        <div className="grid lg:grid-cols-[55%_45%] min-h-[570px]">
+        <div className="grid lg:grid-cols-[55%_45%] min-h-[540px]">
 
           {/* =================================================
               LEFT — HERO TYPOGRAPHY
@@ -57,7 +57,7 @@ export default function InputScreen({
 
               {/* Eyebrow */}
 
-              <div className="flex items-center gap-4 mb-9">
+              <div className="flex items-center gap-4 mb-8">
 
                 <span className="w-11 h-px bg-amber-700" />
 
@@ -91,7 +91,7 @@ export default function InputScreen({
 
             {/* Description */}
 
-            <p className="mt-12 max-w-2xl text-[16px] leading-7 text-zinc-600">
+            <p className="mt-8 max-w-2xl text-[16px] leading-7 text-zinc-600">
               Compare papers, uncover research gaps, and discover
               promising directions before you start building.
             </p>
@@ -103,7 +103,7 @@ export default function InputScreen({
               RIGHT — PROCESS
           ================================================= */}
 
-          <div className="relative flex items-end pl-10 xl:pl-20">
+          <div className="relative flex items-end pl-8 xl:pl-12">
 
             {/* Vertical rule */}
 
@@ -114,14 +114,14 @@ export default function InputScreen({
 
               {/* Section label */}
 
-              <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-400 mb-14">
+              <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-400 mb-12">
                 From literature to ideas
               </p>
 
 
               {/* PROCESS LIST */}
 
-              <div className="space-y-11">
+              <div className="space-y-9">
 
 
                 {/* -----------------------------------------
@@ -152,7 +152,7 @@ export default function InputScreen({
 
                 {/* Connector */}
 
-                <div className="ml-[31px] h-8 border-l border-dashed border-zinc-300" />
+                <div className="ml-[31px] h-7 border-l border-dashed border-zinc-300" />
 
 
                 {/* -----------------------------------------
@@ -183,7 +183,7 @@ export default function InputScreen({
 
                 {/* Connector */}
 
-                <div className="ml-[31px] h-8 border-l border-dashed border-zinc-300" />
+                <div className="ml-[31px] h-7 border-l border-dashed border-zinc-300" />
 
 
                 {/* -----------------------------------------
@@ -192,13 +192,13 @@ export default function InputScreen({
 
                 <div className="grid grid-cols-[64px_1fr] gap-7">
 
-                  <div className="font-serif text-4xl leading-none text-amber-700">
+                  <div className="font-serif text-4xl leading-none text-zinc-300">
                     03
                   </div>
 
                   <div>
 
-                    <p className="font-serif italic text-[2rem] leading-none text-amber-700">
+                    <p className="font-serif text-[2rem] leading-none text-zinc-900">
                       Research ideas
                     </p>
 
@@ -216,8 +216,7 @@ export default function InputScreen({
 
               {/* Bottom statement */}
 
-              <div className="mt-16 pt-6 border-t border-zinc-200">
-
+              <div className="mt-12 pt-6 border-t border-zinc-200">
 
               </div>
 
@@ -234,13 +233,16 @@ export default function InputScreen({
           ANALYSIS AREA
       ====================================================== */}
 
-      <section className="w-full px-8 md:px-12 lg:px-16 xl:px-20 pb-24">
+      <section className="w-full px-8 md:px-12 lg:px-16 xl:px-20 pb-20">
 
-        <div className="border-t border-zinc-300 pt-12">
+        <div className="border-t border-zinc-300 pt-10">
 
           <form onSubmit={handleSubmit}>
 
-            <div className="grid lg:grid-cols-[42%_58%] gap-12 lg:gap-20">
+            {/* CHANGED:
+                Reduced gap and made right column start earlier */}
+
+            <div className="grid lg:grid-cols-[42%_58%] gap-10 lg:gap-14">
 
 
               {/* =================================================

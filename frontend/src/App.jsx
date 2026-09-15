@@ -1,9 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import InputScreen from './components/InputScreen';
 import ResultsScreen from './components/ResultsScreen';
 
 function App() {
   const [appState, setAppState] = useState('input');
+  useEffect(() => {
+    if (appState === 'results') {
+      window.scrollTo(0, 0);
+    }
+  }, [appState]);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
 
@@ -28,6 +33,10 @@ function App() {
     });
 
     try {
+      // ==========================================
+      // STEP 1: Upload and extract PDF text
+      // ==========================================
+
       const uploadResponse = await fetch(
         'http://localhost:3001/api/upload',
         {
@@ -46,6 +55,10 @@ function App() {
       }
 
       const uploadData = await uploadResponse.json();
+
+      // ==========================================
+      // STEP 2: Analyze papers with AI
+      // ==========================================
 
       setAppState('loading-analyze');
 
@@ -72,8 +85,12 @@ function App() {
       const analysisData = await analyzeResponse.json();
 
       const paperAnalyses = analysisData.papers
-        .map((p) => p.analysis)
+        .map((paper) => paper.analysis)
         .filter(Boolean);
+
+      // ==========================================
+      // STEP 3: Extract research gaps
+      // ==========================================
 
       const gapsResponse = await fetch(
         'http://localhost:3001/api/gaps',
@@ -93,6 +110,10 @@ function App() {
         ? await gapsResponse.json()
         : null;
 
+      // ==========================================
+      // STEP 4: Extract contradictions
+      // ==========================================
+
       const contradictionsResponse = await fetch(
         'http://localhost:3001/api/contradictions',
         {
@@ -111,6 +132,10 @@ function App() {
         contradictionsResponse.ok
           ? await contradictionsResponse.json()
           : null;
+
+      // ==========================================
+      // STEP 5: Generate research opportunities
+      // ==========================================
 
       const opportunitiesResponse = await fetch(
         'http://localhost:3001/api/opportunities',
@@ -134,13 +159,30 @@ function App() {
           ? await opportunitiesResponse.json()
           : null;
 
-      setResults(analysisData);
+      // ==========================================
+      // STORE RESULTS
+      // ==========================================
+
+      /*
+        Keep gaps and contradictions inside results
+        so ResultsScreen can render the complete
+        research analysis in one place.
+      */
+
+      setResults({
+        ...analysisData,
+        gaps: gapsData,
+        contradictions: contradictionsData,
+      });
+
       setGaps(gapsData);
       setContradictions(contradictionsData);
       setOpportunities(opportunitiesData);
 
+      // Clear previous Challenge My Idea result
       setChallengeResult(null);
       setChallengeError(null);
+      setChallengeLoading(false);
 
       setAppState('results');
 
@@ -153,8 +195,11 @@ function App() {
   };
 
 
-  const handleChallenge = async (ideaText) => {
+  // ==========================================
+  // CHALLENGE MY IDEA
+  // ==========================================
 
+  const handleChallenge = async (ideaText) => {
     if (
       !ideaText ||
       ideaText.trim().split(/\s+/).length < 10
@@ -170,7 +215,6 @@ function App() {
     setChallengeError(null);
 
     try {
-
       const response = await fetch(
         'http://localhost:3001/api/challenge',
         {
@@ -180,12 +224,16 @@ function App() {
           },
           body: JSON.stringify({
             ideaText: ideaText.trim(),
+
             topic: results?.topic || '',
+
             paperAnalyses:
               results?.papers
-                ?.map((p) => p.analysis)
+                ?.map((paper) => paper.analysis)
                 .filter(Boolean) || [],
-            landscape: results?.landscape || null,
+
+            landscape:
+              results?.landscape || null,
           }),
         }
       );
@@ -202,22 +250,26 @@ function App() {
       setChallengeResult(data);
 
     } catch (err) {
-
       console.error(err);
 
-      setChallengeError(err.message);
+      setChallengeError(
+        err.message ||
+        'Failed to analyze the research idea.'
+      );
 
     } finally {
-
       setChallengeLoading(false);
-
     }
   };
 
 
-  const handleReset = () => {
+  // ==========================================
+  // RESET
+  // ==========================================
 
+  const handleReset = () => {
     setResults(null);
+
     setGaps(null);
     setContradictions(null);
     setOpportunities(null);
@@ -232,10 +284,13 @@ function App() {
   };
 
 
+  // ==========================================
+  // LOADING STATE
+  // ==========================================
+
   const isLoading =
     appState === 'loading-extract' ||
     appState === 'loading-analyze';
-
 
   const loadingMessage =
     appState === 'loading-extract'
@@ -243,106 +298,50 @@ function App() {
       : 'Analyzing papers with AI...';
 
 
-  return (
+  // ==========================================
+  // UI
+  // ==========================================
 
+  return (
     <main>
+
+      {/* Error message */}
 
       {error && (
         <div className="max-w-2xl mx-auto mt-6 px-6">
-          <div className="bg-red-50 border border-red-200 text-red-800 p-4 text-sm">
+          <div className="border-t border-b border-red-200 py-4 text-sm text-red-700">
             {error}
           </div>
         </div>
       )}
 
 
-      {(appState === 'input' || isLoading) && (
+      {/* Input / Loading screen */}
 
+      {(appState === 'input' || isLoading) && (
         <InputScreen
           onAnalyze={handleAnalyze}
           isLoading={isLoading}
           loadingMessage={loadingMessage}
         />
-
       )}
 
 
+      {/* Results */}
+
       {appState === 'results' && results && (
-
-        <>
-
-          <ResultsScreen
-            data={results}
-            onReset={handleReset}
-            opportunities={opportunities}
-            challengeResult={challengeResult}
-            onChallenge={handleChallenge}
-            challengeLoading={challengeLoading}
-            challengeError={challengeError}
-          />
-
-
-          {gaps?.gaps && (
-
-            <section className="max-w-5xl mx-auto mt-8 mb-8 px-6">
-
-              <div className="border-t border-zinc-300 pt-6">
-
-                <h2 className="font-serif text-3xl mb-4">
-                  Research Gaps
-                </h2>
-
-                <ul className="list-disc pl-5 space-y-2 text-zinc-700">
-
-                  {gaps.gaps.map((gap, index) => (
-                    <li key={index}>
-                      {gap}
-                    </li>
-                  ))}
-
-                </ul>
-
-              </div>
-
-            </section>
-
-          )}
-
-
-          {contradictions?.contradictions && (
-
-            <section className="max-w-5xl mx-auto mt-8 mb-16 px-6">
-
-              <div className="border-t border-zinc-300 pt-6">
-
-                <h2 className="font-serif text-3xl mb-4">
-                  Contradictions
-                </h2>
-
-                <ul className="list-disc pl-5 space-y-2 text-zinc-700">
-
-                  {contradictions.contradictions.map(
-                    (contradiction, index) => (
-                      <li key={index}>
-                        {contradiction}
-                      </li>
-                    )
-                  )}
-
-                </ul>
-
-              </div>
-
-            </section>
-
-          )}
-
-        </>
-
+        <ResultsScreen
+          data={results}
+          onReset={handleReset}
+          opportunities={opportunities}
+          challengeResult={challengeResult}
+          onChallenge={handleChallenge}
+          challengeLoading={challengeLoading}
+          challengeError={challengeError}
+        />
       )}
 
     </main>
-
   );
 }
 
