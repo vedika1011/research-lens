@@ -7,197 +7,814 @@ const groq = new Groq({
 
 const MODEL = 'openai/gpt-oss-120b';
 
-function truncateText(text, maxChars = 4000) {
-  if (!text || text.length <= maxChars) return text;
-  // Take first 2000 and last 2000 characters
-  const half = Math.floor(maxChars / 2);
-  return text.substring(0, half) + '\n\n...[TRUNCATED MIDDLE]...\n\n' + text.substring(text.length - half);
+// ============================================================
+// RATE LIMIT / TOKEN CONTROL
+// ============================================================
+
+// Keep requests spaced out instead of sending many requests
+// to Groq at the same time.
+const MIN_REQUEST_INTERVAL = 12000; // 12 seconds
+
+let lastRequestTime = 0;
+let requestQueue = Promise.resolve();
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callGroqWithRetry(systemPrompt, userPrompt, jsonSchema, retries = 1, extraParams = {}) {
+// Queue all Groq requests so they happen one at a time.
+function queueGroqRequest(fn) {
+  const nextRequest = requestQueue.then(async () => {
+    const now = Date.now();
+    const elapsed = now - lastRequestTime;
+
+    if (elapsed < MIN_REQUEST_INTERVAL) {
+      await sleep(MIN_REQUEST_INTERVAL - elapsed);
+    }
+
+    lastRequestTime = Date.now();
+
+    return fn();
+  });
+
+  // Keep the queue alive even if one request fails.
+  requestQueue = nextRequest.catch(() => { });
+
+  return nextRequest;
+}
+
+// ============================================================
+// TEXT CONTROL
+// ============================================================
+
+function truncateText(text, maxChars = 3500) {
+  if (!text || text.length <= maxChars) {
+    return text || '';
+  }
+
+  const half = Math.floor(maxChars / 2);
+
+  return (
+    text.substring(0, half) +
+    '\n\n...[TRUNCATED MIDDLE]...\n\n' +
+    text.substring(text.length - half)
+  );
+}
+
+// Keep downstream prompts compact.
+// We do not need to send every large field repeatedly.
+function compactPaperAnalyses(paperAnalyses) {
+  if (!Array.isArray(paperAnalyses)) {
+    return [];
+  }
+
+  return paperAnalyses.map((paper) => ({
+    filename: paper.filename || '',
+    title: paper.title || '',
+    researchProblem: truncateText(paper.researchProblem, 700),
+    methodology: truncateText(paper.methodology, 700),
+    dataset: truncateText(paper.dataset, 400),
+    keyFindings: Array.isArray(paper.keyFindings)
+      ? paper.keyFindings.slice(0, 4).map((item) => truncateText(item, 400))
+      : [],
+    evaluationMetrics: Array.isArray(paper.evaluationMetrics)
+      ? paper.evaluationMetrics.slice(0, 5)
+      : [],
+    limitations: Array.isArray(paper.limitations)
+      ? paper.limitations.slice(0, 5).map((item) => truncateText(item, 400))
+      : [],
+    relevantQuote: truncateText(paper.relevantQuote, 500)
+  }));
+}
+
+// ============================================================
+// GROQ CALL WITH RETRY
+// ============================================================
+
+async function callGroqWithRetry(
+  systemPrompt,
+  userPrompt,
+  jsonSchema,
+  retries = 2,
+  extraParams = {}
+) {
   let attempt = 0;
+
   while (attempt <= retries) {
     try {
-      const completion = await groq.chat.completions.create({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        model: MODEL,
-        response_format: {
-          type: 'json_schema',
-          json_schema: jsonSchema
-        },
-        ...extraParams
-      });
-      const responseText = completion.choices[0]?.message?.content || '{}';
+      const completion = await queueGroqRequest(() =>
+        groq.chat.completions.create({
+          messages: [
+            {
+              role: 'system',
+              content: systemPrompt
+            },
+            {
+              role: 'user',
+              content: userPrompt
+            }
+          ],
+
+          model: MODEL,
+
+          response_format: {
+            type: 'json_schema',
+            json_schema: jsonSchema
+          },
+
+          ...extraParams
+        })
+      );
+
+      const responseText =
+        completion.choices[0]?.message?.content || '{}';
+
       return JSON.parse(responseText);
+
     } catch (err) {
-      // Handle rate limiting gracefully
-      if (err && (err.status === 429 || err.code === 429)) {
-        throw new Error('Analysis is temporarily rate-limited. Please wait about a minute and try again.');
+      const isRateLimit =
+        err &&
+        (err.status === 429 ||
+          err.code === 429 ||
+          err.error?.code === 'rate_limit_exceeded');
+
+      if (isRateLimit) {
+        console.error('Groq rate limit reached.');
+
+        // Wait before retrying instead of immediately sending
+        // another request.
+        if (attempt < retries) {
+          console.log(
+            'Waiting 30 seconds before retrying...'
+          );
+
+          await sleep(30000);
+
+          attempt++;
+          continue;
+        }
+
+        throw new Error(
+          'Analysis is temporarily rate-limited. Please wait about a minute and try again.'
+        );
       }
+
       attempt++;
-      console.error(`LLM Call failed on attempt ${attempt}:`, err.message);
+
+      console.error(
+        `LLM Call failed on attempt ${attempt}:`,
+        err?.message || err
+      );
+
       if (attempt > retries) {
-        throw new Error('LLM call or parsing failed after retries: ' + err.message);
+        throw new Error(
+          'LLM call or parsing failed after retries: ' +
+          (err?.message || 'Unknown error')
+        );
       }
+
+      // Short delay for non-rate-limit errors.
+      await sleep(3000);
     }
   }
 }
 
+// ============================================================
+// PAPER ANALYSIS
+// ============================================================
+
 async function analyzePaper(topic, paper) {
-  const truncatedText = truncateText(paper.extractedText);
-  const systemPrompt = `You are a strict, analytical research assistant. Extract information from the provided academic paper text relative to the research topic: "${topic}". Provide a comprehensive breakdown based on the schema.`;
-  
+  const truncatedText = truncateText(
+    paper.extractedText,
+    3500
+  );
+
+  const systemPrompt = `
+You are a strict, analytical research assistant.
+
+Analyze the provided academic paper relative to the research topic:
+"${topic}"
+
+Use only information supported by the provided paper text.
+
+Do not invent findings, datasets, limitations, metrics, or quotations.
+
+Return a concise but useful structured analysis.
+`;
+
   const schema = {
-    name: "PaperAnalysis",
+    name: 'PaperAnalysis',
+
     schema: {
-      type: "object",
+      type: 'object',
+
       properties: {
-        filename: { type: "string", description: "The filename of the paper" },
-        title: { type: "string", description: "Best guess of the paper title based on the text" },
-        researchProblem: { type: "string", description: "A concise description of the problem the paper addresses" },
-        methodology: { type: "string", description: "A brief summary of the methods used" },
-        dataset: { type: "string", description: "Datasets or inputs used (or 'Not applicable'/'Not mentioned')" },
-        keyFindings: { type: "array", items: { type: "string" }, description: "Key findings from the paper" },
-        evaluationMetrics: { type: "array", items: { type: "string" }, description: "Metrics used to evaluate the methodology" },
-        limitations: { type: "array", items: { type: "string" }, description: "Limitations mentioned in the paper" },
-        relevantQuote: { type: "string", description: "A short, exact verbatim quote from the text that best supports the research problem" }
+        filename: {
+          type: 'string',
+          description: 'The filename of the paper'
+        },
+
+        title: {
+          type: 'string',
+          description:
+            'Best guess of the paper title based on the text'
+        },
+
+        researchProblem: {
+          type: 'string',
+          description:
+            'A concise description of the problem the paper addresses'
+        },
+
+        methodology: {
+          type: 'string',
+          description:
+            'A concise summary of the methods used'
+        },
+
+        dataset: {
+          type: 'string',
+          description:
+            "Datasets or inputs used, or 'Not applicable'/'Not mentioned'"
+        },
+
+        keyFindings: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description:
+            'Important findings supported by the paper'
+        },
+
+        evaluationMetrics: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description:
+            'Metrics used to evaluate the methodology'
+        },
+
+        limitations: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description:
+            'Limitations mentioned or clearly supported by the paper'
+        },
+
+        relevantQuote: {
+          type: 'string',
+          description:
+            'A short exact quote from the provided text supporting the research problem'
+        }
       },
-      required: ["filename", "title", "researchProblem", "methodology", "dataset", "keyFindings", "evaluationMetrics", "limitations", "relevantQuote"]
+
+      required: [
+        'filename',
+        'title',
+        'researchProblem',
+        'methodology',
+        'dataset',
+        'keyFindings',
+        'evaluationMetrics',
+        'limitations',
+        'relevantQuote'
+      ]
     }
   };
 
   return await callGroqWithRetry(
     systemPrompt,
-    `Paper filename: ${paper.filename}\n\nPaper text:\n${truncatedText}`,
+
+    `Paper filename: ${paper.filename}
+
+Paper text:
+${truncatedText}`,
+
     schema,
-    1,
-    { reasoning_effort: "low", max_completion_tokens: 1500 }
+
+    2,
+
+    {
+      reasoning_effort: 'low',
+      max_completion_tokens: 1000
+    }
   );
 }
 
-async function synthesizeLandscape(topic, paperAnalyses) {
-  const systemPrompt = `You are a strict research synthesis AI. You will receive an array of JSON objects representing summaries of several research papers on the topic: "${topic}". Synthesize the landscape across all these papers into the required schema.`;
-  
+// ============================================================
+// RESEARCH LANDSCAPE
+// ============================================================
+
+async function synthesizeLandscape(
+  topic,
+  paperAnalyses
+) {
+  const compactAnalyses =
+    compactPaperAnalyses(paperAnalyses);
+
+  const systemPrompt = `
+You are a strict research synthesis AI.
+
+You will receive concise structured analyses of research papers about:
+"${topic}"
+
+Synthesize the research landscape using only the provided analyses.
+
+Do not invent information.
+`;
+
   const schema = {
-    name: "LandscapeSynthesis",
+    name: 'LandscapeSynthesis',
+
     schema: {
-      type: "object",
+      type: 'object',
+
       properties: {
-        landscapeSummary: { type: "string", description: "2-3 sentences summarizing the collective coverage and state of research in these papers regarding the topic." },
-        commonThemes: { type: "array", items: { type: "string" }, description: "Themes or topics that are common across multiple papers." },
-        divergingApproaches: { type: "array", items: { type: "string" }, description: "Differing methods, approaches, or conclusions between the papers (e.g. approach A vs approach B)." }
+        landscapeSummary: {
+          type: 'string',
+          description:
+            '2-3 concise sentences summarizing the collective research landscape'
+        },
+
+        commonThemes: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description:
+            'Themes shared across multiple papers'
+        },
+
+        divergingApproaches: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description:
+            'Important differences in methods, approaches, or findings'
+        }
       },
-      required: ["landscapeSummary", "commonThemes", "divergingApproaches"]
+
+      required: [
+        'landscapeSummary',
+        'commonThemes',
+        'divergingApproaches'
+      ]
     }
   };
 
-  return await callGroqWithRetry(systemPrompt, `Paper summaries:\n${JSON.stringify(paperAnalyses, null, 2)}`, schema);
-}
-
-async function extractGaps(topic, paperAnalyses) {
-  const systemPrompt = `You are a research assistant. Given the topic and an array of paper analyses, identify the research gaps that emerge across these papers. Provide a concise list of gaps.`;
-  const schema = {
-    name: "GapsExtraction",
-    schema: {
-      type: "object",
-      properties: {
-        gaps: { type: "array", items: { type: "string" }, description: "List of identified research gaps across the analyses" }
-      },
-      required: ["gaps"]
-    }
-  };
   return await callGroqWithRetry(
     systemPrompt,
-    `Topic: ${topic}\n\nPaper Analyses:\n${JSON.stringify(paperAnalyses, null, 2)}`,
+
+    `Paper analyses:
+${JSON.stringify(compactAnalyses)}`,
+
     schema,
-    1,
-    { reasoning_effort: "low", max_completion_tokens: 1000 }
+
+    2,
+
+    {
+      reasoning_effort: 'low',
+      max_completion_tokens: 700
+    }
   );
 }
 
-async function extractContradictions(topic, paperAnalyses) {
-  const systemPrompt = `You are a research assistant. Given the topic and an array of paper analyses, find any contradictions or conflicting findings among the papers. Provide a concise list of contradictions.`;
+// ============================================================
+// RESEARCH GAPS
+// ============================================================
+
+async function extractGaps(
+  topic,
+  paperAnalyses
+) {
+  const compactAnalyses =
+    compactPaperAnalyses(paperAnalyses);
+
+  const systemPrompt = `
+You are a research assistant.
+
+Given the research topic and structured analyses of several papers,
+identify meaningful research gaps that emerge across the literature.
+
+Use only the provided evidence.
+
+Avoid generic statements such as "more research is needed."
+`;
+
   const schema = {
-    name: "ContradictionsExtraction",
+    name: 'GapsExtraction',
+
     schema: {
-      type: "object",
+      type: 'object',
+
       properties: {
-        contradictions: { type: "array", items: { type: "string" }, description: "List of contradictions found across the analyses" }
+        gaps: {
+          type: 'array',
+
+          items: {
+            type: 'string'
+          },
+
+          description:
+            'Specific research gaps grounded in the provided papers'
+        }
       },
-      required: ["contradictions"]
+
+      required: ['gaps']
     }
   };
-  return await callGroqWithRetry(systemPrompt, `Topic: ${topic}\n\nPaper Analyses:\n${JSON.stringify(paperAnalyses, null, 2)}`, schema, 1, { reasoning_effort: "low", max_completion_tokens: 1000 });
+
+  return await callGroqWithRetry(
+    systemPrompt,
+
+    `Topic: ${topic}
+
+Paper analyses:
+${JSON.stringify(compactAnalyses)}`,
+
+    schema,
+
+    2,
+
+    {
+      reasoning_effort: 'low',
+      max_completion_tokens: 700
+    }
+  );
 }
 
-async function extractOpportunities(topic, paperAnalyses, landscape, gaps, contradictions) {
-  const systemPrompt = `You are a research assistant. Given the research topic, an array of paper analyses, the synthesized landscape, identified gaps, and contradictions, generate 3-5 concrete research opportunities. Each must include title, description, research question, why it matters, related gaps, and supporting evidence from papers.`;
+// ============================================================
+// CONTRADICTIONS
+// ============================================================
+
+async function extractContradictions(
+  topic,
+  paperAnalyses
+) {
+  const compactAnalyses =
+    compactPaperAnalyses(paperAnalyses);
+
+  const systemPrompt = `
+You are a research assistant.
+
+Compare the provided paper analyses for the topic:
+"${topic}"
+
+Identify genuine contradictions or conflicting findings.
+
+Only report contradictions that are actually supported by the provided analyses.
+
+If there is no meaningful contradiction, return an empty list.
+
+Do not force a contradiction.
+`;
+
   const schema = {
-    name: "OpportunitiesExtraction",
+    name: 'ContradictionsExtraction',
+
     schema: {
-      type: "object",
+      type: 'object',
+
+      properties: {
+        contradictions: {
+          type: 'array',
+
+          items: {
+            type: 'string'
+          },
+
+          description:
+            'Genuine contradictions or conflicting findings'
+        }
+      },
+
+      required: ['contradictions']
+    }
+  };
+
+  return await callGroqWithRetry(
+    systemPrompt,
+
+    `Topic: ${topic}
+
+Paper analyses:
+${JSON.stringify(compactAnalyses)}`,
+
+    schema,
+
+    2,
+
+    {
+      reasoning_effort: 'low',
+      max_completion_tokens: 700
+    }
+  );
+}
+
+// ============================================================
+// RESEARCH OPPORTUNITIES
+// ============================================================
+
+async function extractOpportunities(
+  topic,
+  paperAnalyses,
+  landscape,
+  gaps,
+  contradictions
+) {
+  const compactAnalyses =
+    compactPaperAnalyses(paperAnalyses);
+
+  const compactLandscape = {
+    landscapeSummary:
+      landscape?.landscapeSummary || '',
+
+    commonThemes:
+      landscape?.commonThemes || [],
+
+    divergingApproaches:
+      landscape?.divergingApproaches || []
+  };
+
+  const compactGaps = {
+    gaps: Array.isArray(gaps?.gaps)
+      ? gaps.gaps.slice(0, 6)
+      : []
+  };
+
+  const compactContradictions = {
+    contradictions:
+      Array.isArray(contradictions?.contradictions)
+        ? contradictions.contradictions.slice(0, 6)
+        : []
+  };
+
+  const systemPrompt = `
+You are a research assistant.
+
+Generate 3-5 concrete research opportunities based only on:
+
+1. The research topic
+2. The paper analyses
+3. The research landscape
+4. Identified research gaps
+5. Identified contradictions
+
+Every opportunity must be traceable to the provided literature.
+
+Do not claim guaranteed novelty or guaranteed success.
+`;
+
+  const schema = {
+    name: 'OpportunitiesExtraction',
+
+    schema: {
+      type: 'object',
+
       properties: {
         opportunities: {
-          type: "array",
+          type: 'array',
+
           items: {
-            type: "object",
+            type: 'object',
+
             properties: {
-              title: { type: "string" },
-              description: { type: "string" },
-              researchQuestion: { type: "string" },
-              whyItMatters: { type: "string" },
-              basedOnGaps: { type: "array", items: { type: "string" } },
-              evidence: {
-                type: "array",
+              title: {
+                type: 'string'
+              },
+
+              description: {
+                type: 'string'
+              },
+
+              researchQuestion: {
+                type: 'string'
+              },
+
+              whyItMatters: {
+                type: 'string'
+              },
+
+              basedOnGaps: {
+                type: 'array',
+
                 items: {
-                  type: "object",
+                  type: 'string'
+                }
+              },
+
+              evidence: {
+                type: 'array',
+
+                items: {
+                  type: 'object',
+
                   properties: {
-                    filename: { type: "string" },
-                    supportingPoint: { type: "string" }
+                    filename: {
+                      type: 'string'
+                    },
+
+                    supportingPoint: {
+                      type: 'string'
+                    }
                   },
-                  required: ["filename", "supportingPoint"]
+
+                  required: [
+                    'filename',
+                    'supportingPoint'
+                  ]
                 }
               }
             },
-            required: ["title", "description", "researchQuestion", "whyItMatters", "basedOnGaps", "evidence"]
+
+            required: [
+              'title',
+              'description',
+              'researchQuestion',
+              'whyItMatters',
+              'basedOnGaps',
+              'evidence'
+            ]
           }
         }
       },
-      required: ["opportunities"]
+
+      required: ['opportunities']
     }
   };
-  const userPayload = JSON.stringify({ topic, paperAnalyses, landscape, gaps, contradictions }, null, 2);
-  return await callGroqWithRetry(systemPrompt, userPayload, schema, 1, { reasoning_effort: "low", max_completion_tokens: 1500 });
+
+  const userPayload = JSON.stringify({
+    topic,
+    paperAnalyses: compactAnalyses,
+    landscape: compactLandscape,
+    gaps: compactGaps,
+    contradictions: compactContradictions
+  });
+
+  return await callGroqWithRetry(
+    systemPrompt,
+    userPayload,
+    schema,
+    2,
+    {
+      reasoning_effort: 'low',
+      max_completion_tokens: 1200
+    }
+  );
 }
 
-async function challengeIdea(topic, paperAnalyses, landscape, ideaText) {
-  if (!ideaText || ideaText.trim().split(/\s+/).length < 10) {
-    throw new Error('Idea text too short. Provide a more detailed description.');
+// ============================================================
+// CHALLENGE MY IDEA
+// ============================================================
+
+async function challengeIdea(
+  topic,
+  paperAnalyses,
+  landscape,
+  ideaText
+) {
+  if (
+    !ideaText ||
+    ideaText.trim().split(/\s+/).length < 10
+  ) {
+    throw new Error(
+      'Idea text too short. Provide a more detailed description.'
+    );
   }
-  const systemPrompt = `You are a research assistant. Given the research topic, the set of paper analyses, the synthesized landscape, and a user-provided research idea, assess how much the idea overlaps with existing work, list overlapping papers with specific points, assign a novelty score (high|medium|low) based only on these papers, provide reasoning, and suggest 2-4 concrete ways to differentiate the idea. Return strict JSON as specified.`;
-  const userPayload = JSON.stringify({ topic, paperAnalyses, landscape, ideaText }, null, 2);
+
+  const compactAnalyses =
+    compactPaperAnalyses(paperAnalyses);
+
+  const compactLandscape = {
+    landscapeSummary:
+      landscape?.landscapeSummary || '',
+
+    commonThemes:
+      landscape?.commonThemes || [],
+
+    divergingApproaches:
+      landscape?.divergingApproaches || []
+  };
+
+  const systemPrompt = `
+You are a research assistant.
+
+Compare the user's proposed research idea against ONLY the uploaded
+paper analyses and synthesized landscape.
+
+Assess overlap with the existing uploaded literature.
+
+Identify specific papers that overlap and explain why.
+
+Assign noveltyScore as:
+- high
+- medium
+- low
+
+This novelty assessment is relative only to the provided papers.
+
+Do not claim that the idea is universally novel.
+
+Suggest concrete ways the user could differentiate the idea.
+`;
+
+  const userPayload = JSON.stringify({
+    topic,
+
+    paperAnalyses: compactAnalyses,
+
+    landscape: compactLandscape,
+
+    ideaText
+  });
+
   const schema = {
-    name: "ChallengeIdea",
+    name: 'ChallengeIdea',
+
     schema: {
-      type: "object",
+      type: 'object',
+
       properties: {
-        overlapAssessment: { type: "string" },
-        overlappingPapers: {
-          type: "array",
-          items: { type: "object", properties: { filename: { type: "string" }, overlapPoint: { type: "string" } }, required: ["filename", "overlapPoint"] }
+        overlapAssessment: {
+          type: 'string'
         },
-        noveltyScore: { type: "string", enum: ["high", "medium", "low"] },
-        noveltyReasoning: { type: "string" },
-        differentiationSuggestions: { type: "array", items: { type: "string" } }
+
+        overlappingPapers: {
+          type: 'array',
+
+          items: {
+            type: 'object',
+
+            properties: {
+              filename: {
+                type: 'string'
+              },
+
+              overlapPoint: {
+                type: 'string'
+              }
+            },
+
+            required: [
+              'filename',
+              'overlapPoint'
+            ]
+          }
+        },
+
+        noveltyScore: {
+          type: 'string',
+
+          enum: [
+            'high',
+            'medium',
+            'low'
+          ]
+        },
+
+        noveltyReasoning: {
+          type: 'string'
+        },
+
+        differentiationSuggestions: {
+          type: 'array',
+
+          items: {
+            type: 'string'
+          }
+        }
       },
-      required: ["overlapAssessment", "overlappingPapers", "noveltyScore", "noveltyReasoning", "differentiationSuggestions"]
+
+      required: [
+        'overlapAssessment',
+        'overlappingPapers',
+        'noveltyScore',
+        'noveltyReasoning',
+        'differentiationSuggestions'
+      ]
     }
   };
-  return await callGroqWithRetry(systemPrompt, userPayload, schema, 1, { reasoning_effort: "low", max_completion_tokens: 1500 });
+
+  return await callGroqWithRetry(
+    systemPrompt,
+    userPayload,
+    schema,
+    2,
+    {
+      reasoning_effort: 'low',
+      max_completion_tokens: 1200
+    }
+  );
 }
+
+// ============================================================
+// EXPORTS
+// ============================================================
 
 module.exports = {
   analyzePaper,
