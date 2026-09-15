@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import InputScreen from './components/InputScreen';
 import ResultsScreen from './components/ResultsScreen';
+const API_URL = import.meta.env.VITE_API_URL;
 
 function App() {
   const [appState, setAppState] = useState('input');
