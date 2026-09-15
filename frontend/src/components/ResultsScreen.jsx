@@ -6,6 +6,8 @@ import {
   Quote,
 } from 'lucide-react';
 
+const API_URL = import.meta.env.VITE_API_URL;
+
 export default function ResultsScreen({
   data,
   onReset,
@@ -23,7 +25,9 @@ export default function ResultsScreen({
     landscapeError,
     papers = [],
     topic,
-  } = data;
+    gaps = [],
+    contradictions = [],
+  } = data || {};
 
   const toggleExpand = (index) => {
     setExpandedIndex(
@@ -31,18 +35,30 @@ export default function ResultsScreen({
     );
   };
 
-  /* ==========================================
+  /* =====================================================
      CHALLENGE MY IDEA
-  ========================================== */
+  ===================================================== */
 
   const handleChallengeIdea = async () => {
     const trimmedIdea = ideaText.trim();
 
-    if (trimmedIdea.split(/\s+/).filter(Boolean).length < 10) {
+    if (
+      trimmedIdea
+        .split(/\s+/)
+        .filter(Boolean)
+        .length < 10
+    ) {
       setChallengeError(
         'Please describe your research idea in at least 10 words.'
       );
       setChallengeResult(null);
+      return;
+    }
+
+    if (!API_URL) {
+      setChallengeError(
+        'Backend URL is not configured.'
+      );
       return;
     }
 
@@ -63,7 +79,7 @@ export default function ResultsScreen({
         .filter(Boolean);
 
       const response = await fetch(
-        'http://localhost:3001/api/challenge',
+        `${API_URL}/api/challenge`,
         {
           method: 'POST',
           headers: {
@@ -89,7 +105,10 @@ export default function ResultsScreen({
 
       setChallengeResult(result);
     } catch (err) {
-      console.error('Challenge My Idea error:', err);
+      console.error(
+        'Challenge My Idea error:',
+        err
+      );
 
       setChallengeError(
         err.message ||
@@ -103,9 +122,9 @@ export default function ResultsScreen({
   return (
     <div className="min-h-screen bg-[#f8f7f3] text-zinc-900">
 
-      {/* ==========================================
-          TOP HEADER
-      ========================================== */}
+      {/* =================================================
+          HEADER
+      ================================================= */}
 
       <header className="max-w-6xl mx-auto px-6 md:px-10 pt-12 pb-8">
         <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-6">
@@ -138,22 +157,20 @@ export default function ResultsScreen({
       </header>
 
 
-      {/* ==========================================
-          MAIN CONTENT
-      ========================================== */}
+      {/* =================================================
+          MAIN
+      ================================================= */}
 
       <main className="max-w-6xl mx-auto px-6 md:px-10 pb-24">
 
-        {/* ==========================================
-            LANDSCAPE / SYNTHESIS
-        ========================================== */}
+        {/* =================================================
+            LANDSCAPE
+        ================================================= */}
 
         {landscapeError ? (
-
           <div className="mb-12 border-t border-b border-red-200 py-5 text-sm text-red-700">
             {landscapeError}
           </div>
-
         ) : landscape ? (
 
           <section className="border-t border-zinc-300 py-10 mb-16">
@@ -173,6 +190,7 @@ export default function ResultsScreen({
               </p>
 
             </div>
+
 
             <div className="grid md:grid-cols-2 gap-12 md:gap-20">
 
@@ -228,9 +246,9 @@ export default function ResultsScreen({
         ) : null}
 
 
-        {/* ==========================================
+        {/* =================================================
             PAPER BREAKDOWN
-        ========================================== */}
+        ================================================= */}
 
         <section className="mb-20">
 
@@ -497,13 +515,12 @@ export default function ResultsScreen({
         </section>
 
 
-        {/* ==========================================
+        {/* =================================================
             RESEARCH OPPORTUNITIES
-        ========================================== */}
+        ================================================= */}
 
         {opportunities &&
-          opportunities.opportunities &&
-          opportunities.opportunities.length > 0 && (
+          opportunities.length > 0 && (
 
             <section className="pt-2 mb-20">
 
@@ -518,8 +535,7 @@ export default function ResultsScreen({
                 </h2>
 
                 <p className="mt-3 max-w-xl text-sm leading-6 text-zinc-500">
-                  Directions suggested by the gaps and tensions
-                  across the literature.
+                  Directions suggested by the gaps and tensions across the literature.
                 </p>
 
               </div>
@@ -527,7 +543,7 @@ export default function ResultsScreen({
 
               <div className="grid md:grid-cols-2 gap-x-16 gap-y-12">
 
-                {opportunities.opportunities.map(
+                {opportunities.map(
                   (opp, index) => (
 
                     <article
@@ -541,6 +557,7 @@ export default function ResultsScreen({
                           {String(index + 1).padStart(2, '0')}
                         </span>
 
+
                         <div className="flex-1">
 
                           <h3 className="font-serif text-2xl leading-tight text-zinc-900 mb-3">
@@ -550,6 +567,44 @@ export default function ResultsScreen({
                           <p className="text-[14px] leading-6 text-zinc-600">
                             {opp.description}
                           </p>
+
+
+                          {/* Research Question */}
+
+                          {opp.researchQuestion && (
+
+                            <div className="mt-5 pt-4 border-t border-zinc-200">
+
+                              <p className="text-[10px] uppercase tracking-[0.15em] font-semibold text-amber-700 mb-2">
+                                Research question
+                              </p>
+
+                              <p className="text-[13px] leading-6 text-zinc-600">
+                                {opp.researchQuestion}
+                              </p>
+
+                            </div>
+
+                          )}
+
+
+                          {/* Why It Matters */}
+
+                          {opp.whyItMatters && (
+
+                            <div className="mt-5">
+
+                              <p className="text-[10px] uppercase tracking-[0.15em] font-semibold text-zinc-400 mb-2">
+                                Why it matters
+                              </p>
+
+                              <p className="text-[13px] leading-6 text-zinc-600">
+                                {opp.whyItMatters}
+                              </p>
+
+                            </div>
+
+                          )}
 
 
                           {/* Based on Gaps */}
@@ -572,29 +627,10 @@ export default function ResultsScreen({
                             )}
 
 
-                          {/* Suggested Approach */}
+                          {/* Evidence */}
 
-                          {opp.suggestedApproach && (
-
-                            <div className="mt-5 pt-4 border-t border-zinc-200">
-
-                              <p className="text-[10px] uppercase tracking-[0.15em] font-semibold text-amber-700 mb-2">
-                                Suggested angle
-                              </p>
-
-                              <p className="text-[13px] leading-6 text-zinc-600">
-                                {opp.suggestedApproach}
-                              </p>
-
-                            </div>
-
-                          )}
-
-
-                          {/* Supporting Evidence */}
-
-                          {opp.supportingEvidence &&
-                            opp.supportingEvidence.length > 0 && (
+                          {opp.evidence &&
+                            opp.evidence.length > 0 && (
 
                               <div className="mt-6 pt-5 border-t border-zinc-200">
 
@@ -604,7 +640,7 @@ export default function ResultsScreen({
 
                                 <div className="space-y-4">
 
-                                  {opp.supportingEvidence.map(
+                                  {opp.evidence.map(
                                     (evidence, evidenceIndex) => (
 
                                       <div
@@ -653,9 +689,9 @@ export default function ResultsScreen({
           )}
 
 
-        {/* ==========================================
+        {/* =================================================
             CHALLENGE MY IDEA
-        ========================================== */}
+        ================================================= */}
 
         <section className="pt-8 pb-12 mb-20">
 
@@ -676,8 +712,7 @@ export default function ResultsScreen({
               </h2>
 
               <p className="mt-5 max-w-sm text-sm leading-6 text-zinc-500">
-                Test your research direction against the
-                literature you just analyzed.
+                Test your research direction against the literature you just analyzed.
               </p>
 
             </div>
@@ -732,7 +767,7 @@ export default function ResultsScreen({
               </div>
 
 
-              {/* Error */}
+              {/* Challenge Error */}
 
               {challengeError && (
 
@@ -743,15 +778,13 @@ export default function ResultsScreen({
               )}
 
 
-              {/* ==========================================
+              {/* =================================================
                   CHALLENGE RESULTS
-              ========================================== */}
+              ================================================= */}
 
               {challengeResult && (
 
                 <div className="mt-12 pt-10 border-t border-zinc-300">
-
-                  {/* Result Heading */}
 
                   <div className="mb-10">
 
@@ -856,12 +889,14 @@ export default function ResultsScreen({
                     <div className="flex items-center gap-4">
 
                       <span className="font-serif text-3xl text-zinc-900">
+
                         {challengeResult.noveltyScore
                           ? challengeResult.noveltyScore
                             .charAt(0)
                             .toUpperCase() +
                           challengeResult.noveltyScore.slice(1)
                           : 'Not assessed'}
+
                       </span>
 
                       <span className="h-px w-10 bg-amber-600" />
@@ -871,7 +906,7 @@ export default function ResultsScreen({
                   </div>
 
 
-                  {/* Why */}
+                  {/* Novelty Reasoning */}
 
                   {challengeResult.noveltyReasoning && (
 
@@ -890,7 +925,7 @@ export default function ResultsScreen({
                   )}
 
 
-                  {/* Ways to Differentiate */}
+                  {/* Differentiation */}
 
                   {challengeResult.differentiationSuggestions &&
                     challengeResult.differentiationSuggestions.length > 0 && (
@@ -950,12 +985,12 @@ export default function ResultsScreen({
         </section>
 
 
-        {/* ==========================================
+        {/* =================================================
             RESEARCH GAPS
-        ========================================== */}
+        ================================================= */}
 
-        {data.gaps?.gaps &&
-          data.gaps.gaps.length > 0 && (
+        {gaps &&
+          gaps.length > 0 && (
 
             <section className="pt-2 mb-16">
 
@@ -969,13 +1004,13 @@ export default function ResultsScreen({
 
               <ul className="max-w-5xl list-disc pl-5 space-y-4 text-[15px] leading-7 text-zinc-600">
 
-                {data.gaps.gaps.map(
+                {gaps.map(
                   (gap, index) => (
 
                     <li key={index}>
                       {typeof gap === 'string'
                         ? gap
-                        : gap.description}
+                        : gap.description || gap.gap || ''}
                     </li>
 
                   )
@@ -988,12 +1023,12 @@ export default function ResultsScreen({
           )}
 
 
-        {/* ==========================================
+        {/* =================================================
             CONTRADICTIONS
-        ========================================== */}
+        ================================================= */}
 
-        {data.contradictions?.contradictions &&
-          data.contradictions.contradictions.length > 0 && (
+        {contradictions &&
+          contradictions.length > 0 && (
 
             <section className="pt-2">
 
@@ -1007,13 +1042,15 @@ export default function ResultsScreen({
 
               <ul className="max-w-5xl list-disc pl-5 space-y-4 text-[15px] leading-7 text-zinc-600">
 
-                {data.contradictions.contradictions.map(
+                {contradictions.map(
                   (contradiction, index) => (
 
                     <li key={index}>
                       {typeof contradiction === 'string'
                         ? contradiction
-                        : contradiction.description}
+                        : contradiction.description ||
+                        contradiction.contradiction ||
+                        ''}
                     </li>
 
                   )
