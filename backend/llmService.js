@@ -1,464 +1,342 @@
-const Groq = require('groq-sdk');
 require('dotenv').config();
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY || 'dummy'
-});
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const MODEL = 'gemini-2.5-flash';
 
-const MODEL = 'openai/gpt-oss-120b';
-
-// ============================================================
-// HELPERS
-// ============================================================
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+if (!GEMINI_API_KEY) {
+  console.warn('WARNING: GEMINI_API_KEY is not set.');
 }
 
-function truncateText(text, maxChars = 2200) {
-  if (!text || text.length <= maxChars) {
-    return text || '';
+function truncateText(text, maxChars = 6000) {
+  if (!text) return '';
+
+  if (text.length <= maxChars) {
+    return text;
   }
 
   const half = Math.floor(maxChars / 2);
 
   return (
     text.substring(0, half) +
-    '\n\n...[TRUNCATED]...\n\n' +
+    '\n\n...[MIDDLE OF PAPER OMITTED FOR ANALYSIS]...\n\n' +
     text.substring(text.length - half)
   );
 }
 
-function compactPaperAnalyses(paperAnalyses) {
-  if (!Array.isArray(paperAnalyses)) {
-    return [];
+async function callGemini(prompt, schema, maxOutputTokens = 5000) {
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY is not configured on the server.');
   }
 
-  return paperAnalyses.map((paper) => ({
-    filename: paper.filename || '',
-    title: paper.title || '',
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent` +
+    `?key=${GEMINI_API_KEY}`;
 
-    researchProblem: paper.researchProblem || '',
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: prompt
+            }
+          ]
+        }
+      ],
 
-    methodology: paper.methodology || '',
-
-    dataset: paper.dataset || '',
-
-    keyFindings: Array.isArray(paper.keyFindings)
-      ? paper.keyFindings.slice(0, 4)
-      : [],
-
-    evaluationMetrics: Array.isArray(
-      paper.evaluationMetrics
-    )
-      ? paper.evaluationMetrics.slice(0, 5)
-      : [],
-
-    limitations: Array.isArray(paper.limitations)
-      ? paper.limitations.slice(0, 5)
-      : [],
-
-    relevantQuote: paper.relevantQuote || ''
-  }));
-}
-
-// ============================================================
-// ONE GROQ REQUEST
-// ============================================================
-
-async function callGroq(
-  systemPrompt,
-  userPrompt,
-  jsonSchema,
-  maxCompletionTokens = 3000
-) {
-  try {
-    console.log('Sending request to Groq...');
-
-    const completion =
-      await groq.chat.completions.create({
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt
-          },
-          {
-            role: 'user',
-            content: userPrompt
-          }
-        ],
-
-        model: MODEL,
-
-        response_format: {
-          type: 'json_schema',
-          json_schema: jsonSchema
-        },
-
-        reasoning_effort: 'low',
-
-        max_completion_tokens:
-          maxCompletionTokens
-      });
-
-    const responseText =
-      completion.choices[0]?.message?.content ||
-      '{}';
-
-    return JSON.parse(responseText);
-
-  } catch (err) {
-    console.error(
-      'Groq error:',
-      err?.message || err
-    );
-
-    if (
-      err?.status === 429 ||
-      err?.code === 429 ||
-      err?.error?.code === 'rate_limit_exceeded'
-    ) {
-      throw new Error(
-        'Analysis is temporarily rate-limited. Please wait about a minute and try again.'
-      );
-    }
-
-    throw new Error(
-      err?.message ||
-      'Groq analysis failed.'
-    );
-  }
-}
-
-// ============================================================
-// MAIN ANALYSIS
-// ONE CALL FOR EVERYTHING
-// ============================================================
-
-async function analyzeResearch(
-  topic,
-  papers
-) {
-  const paperInputs = papers.map(
-    (paper, index) => ({
-      paperNumber: index + 1,
-
-      filename: paper.filename,
-
-      text: truncateText(
-        paper.extractedText,
-        2200
-      )
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens,
+        responseMimeType: 'application/json',
+        responseSchema: schema
+      }
     })
-  );
+  });
 
-  const systemPrompt = `
-You are ResearchLens, a strict academic research analysis assistant.
+  const data = await response.json();
 
-The user has provided several research papers about:
+  if (!response.ok) {
+    console.error('Gemini API error:', JSON.stringify(data, null, 2));
 
+    const message =
+      data?.error?.message ||
+      `Gemini API request failed with status ${response.status}`;
+
+    throw new Error(message);
+  }
+
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || '')
+      .join('') || '';
+
+  if (!text) {
+    console.error('Empty Gemini response:', JSON.stringify(data, null, 2));
+    throw new Error('Gemini returned an empty response.');
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    console.error('Failed to parse Gemini JSON:', text);
+    throw new Error('Gemini returned invalid JSON.');
+  }
+}
+
+
+/* =========================================================
+   MAIN RESEARCH ANALYSIS
+   ========================================================= */
+
+async function analyzeResearch(topic, papers) {
+  const paperSections = papers
+    .map((paper, index) => {
+      return `
+========================
+PAPER ${index + 1}
+========================
+
+Filename:
+${paper.filename}
+
+Paper text:
+${truncateText(paper.extractedText, 6000)}
+`;
+    })
+    .join('\n');
+
+  const prompt = `
+You are ResearchLens, an academic research-analysis assistant.
+
+Your job is to analyze a small collection of research papers and help a student move from:
+
+papers → evidence → research landscape → gaps → contradictions → research opportunities.
+
+Research topic:
 "${topic}"
-
-Analyze ALL provided papers in ONE response.
-
-Your response must contain:
-
-1. Individual paper analyses
-2. Research landscape
-3. Research gaps
-4. Contradictions
-5. Research opportunities
 
 IMPORTANT RULES:
 
-- Use ONLY information present in the supplied paper text.
-- Do not invent facts.
-- Do not invent datasets.
-- Do not invent results.
-- Do not invent quotations.
-- Do not force contradictions.
-- If there is no meaningful contradiction, return an empty contradictions array.
-- Research gaps must be grounded in the supplied papers.
-- Research opportunities must be based on the identified gaps.
-- Evidence must identify the relevant paper filename.
-- Keep the response concise and useful.
-- Do not claim that any opportunity is guaranteed to be novel.
+1. Base your analysis ONLY on the supplied paper text.
+2. Do not invent datasets, results, methods, limitations, or claims.
+3. If information is not present, say "Not mentioned".
+4. Research gaps must emerge from the supplied papers.
+5. Contradictions must be supported by differences between supplied papers.
+6. Research opportunities should be reasonable extensions of the observed gaps.
+7. Every opportunity must include evidence from one or more supplied papers.
+8. Keep answers concise enough for a student-facing research tool.
+9. relevantQuote must be a short EXACT quote copied from the supplied paper text.
+10. Do not use markdown in the JSON values.
 
-For each paper identify:
-- title
-- research problem
-- methodology
-- dataset
-- key findings
-- evaluation metrics
-- limitations
-- one short relevant quote if available
+Analyze all papers and return the required JSON structure.
 
-For the landscape identify:
-- overall summary
-- common themes
-- diverging approaches
-
-For opportunities provide 3 concrete research directions.
+${paperSections}
 `;
 
   const schema = {
-    name: 'CompleteResearchAnalysis',
+    type: 'object',
 
-    schema: {
-      type: 'object',
+    properties: {
+      papers: {
+        type: 'array',
 
-      properties: {
-        papers: {
-          type: 'array',
-
-          items: {
-            type: 'object',
-
-            properties: {
-              filename: {
-                type: 'string'
-              },
-
-              title: {
-                type: 'string'
-              },
-
-              researchProblem: {
-                type: 'string'
-              },
-
-              methodology: {
-                type: 'string'
-              },
-
-              dataset: {
-                type: 'string'
-              },
-
-              keyFindings: {
-                type: 'array',
-
-                items: {
-                  type: 'string'
-                }
-              },
-
-              evaluationMetrics: {
-                type: 'array',
-
-                items: {
-                  type: 'string'
-                }
-              },
-
-              limitations: {
-                type: 'array',
-
-                items: {
-                  type: 'string'
-                }
-              },
-
-              relevantQuote: {
-                type: 'string'
-              }
-            },
-
-            required: [
-              'filename',
-              'title',
-              'researchProblem',
-              'methodology',
-              'dataset',
-              'keyFindings',
-              'evaluationMetrics',
-              'limitations',
-              'relevantQuote'
-            ]
-          }
-        },
-
-        landscape: {
+        items: {
           type: 'object',
 
           properties: {
-            landscapeSummary: {
+            filename: {
               type: 'string'
             },
 
-            commonThemes: {
-              type: 'array',
+            title: {
+              type: 'string'
+            },
 
+            researchProblem: {
+              type: 'string'
+            },
+
+            methodology: {
+              type: 'string'
+            },
+
+            dataset: {
+              type: 'string'
+            },
+
+            keyFindings: {
+              type: 'array',
               items: {
                 type: 'string'
               }
             },
 
-            divergingApproaches: {
+            evaluationMetrics: {
               type: 'array',
-
               items: {
                 type: 'string'
               }
+            },
+
+            limitations: {
+              type: 'array',
+              items: {
+                type: 'string'
+              }
+            },
+
+            relevantQuote: {
+              type: 'string'
             }
           },
 
           required: [
-            'landscapeSummary',
-            'commonThemes',
-            'divergingApproaches'
+            'filename',
+            'title',
+            'researchProblem',
+            'methodology',
+            'dataset',
+            'keyFindings',
+            'evaluationMetrics',
+            'limitations',
+            'relevantQuote'
           ]
-        },
+        }
+      },
 
-        gaps: {
-          type: 'object',
+      landscape: {
+        type: 'object',
 
-          properties: {
-            gaps: {
-              type: 'array',
+        properties: {
+          landscapeSummary: {
+            type: 'string'
+          },
 
-              items: {
-                type: 'string'
-              }
+          commonThemes: {
+            type: 'array',
+            items: {
+              type: 'string'
             }
           },
 
-          required: [
-            'gaps'
-          ]
+          divergingApproaches: {
+            type: 'array',
+            items: {
+              type: 'string'
+            }
+          }
         },
 
-        contradictions: {
+        required: [
+          'landscapeSummary',
+          'commonThemes',
+          'divergingApproaches'
+        ]
+      },
+
+      gaps: {
+        type: 'array',
+
+        items: {
+          type: 'string'
+        }
+      },
+
+      contradictions: {
+        type: 'array',
+
+        items: {
+          type: 'string'
+        }
+      },
+
+      opportunities: {
+        type: 'array',
+
+        items: {
           type: 'object',
 
           properties: {
-            contradictions: {
-              type: 'array',
+            title: {
+              type: 'string'
+            },
 
+            description: {
+              type: 'string'
+            },
+
+            researchQuestion: {
+              type: 'string'
+            },
+
+            whyItMatters: {
+              type: 'string'
+            },
+
+            basedOnGaps: {
+              type: 'array',
               items: {
                 type: 'string'
               }
-            }
-          },
+            },
 
-          required: [
-            'contradictions'
-          ]
-        },
-
-        opportunities: {
-          type: 'object',
-
-          properties: {
-            opportunities: {
+            evidence: {
               type: 'array',
 
               items: {
                 type: 'object',
 
                 properties: {
-                  title: {
+                  filename: {
                     type: 'string'
                   },
 
-                  description: {
+                  supportingPoint: {
                     type: 'string'
-                  },
-
-                  researchQuestion: {
-                    type: 'string'
-                  },
-
-                  whyItMatters: {
-                    type: 'string'
-                  },
-
-                  basedOnGaps: {
-                    type: 'array',
-
-                    items: {
-                      type: 'string'
-                    }
-                  },
-
-                  evidence: {
-                    type: 'array',
-
-                    items: {
-                      type: 'object',
-
-                      properties: {
-                        filename: {
-                          type: 'string'
-                        },
-
-                        supportingPoint: {
-                          type: 'string'
-                        }
-                      },
-
-                      required: [
-                        'filename',
-                        'supportingPoint'
-                      ]
-                    }
                   }
                 },
 
                 required: [
-                  'title',
-                  'description',
-                  'researchQuestion',
-                  'whyItMatters',
-                  'basedOnGaps',
-                  'evidence'
+                  'filename',
+                  'supportingPoint'
                 ]
               }
-            ]
-},
+            }
+          },
 
-required: [
-  'opportunities'
-]
+          required: [
+            'title',
+            'description',
+            'researchQuestion',
+            'whyItMatters',
+            'basedOnGaps',
+            'evidence'
+          ]
         }
-      },
+      }
+    },
 
-required: [
-  'papers',
-  'landscape',
-  'gaps',
-  'contradictions',
-  'opportunities'
-]
-    }
+    required: [
+      'papers',
+      'landscape',
+      'gaps',
+      'contradictions',
+      'opportunities'
+    ]
   };
 
-return await callGroq(
-  systemPrompt,
-
-  `Research topic:
-
-${topic}
-
-Papers:
-
-${JSON.stringify(
-    paperInputs,
-    null,
-    2
-  )}`,
-
-  schema,
-
-  3000
-);
+  return await callGemini(prompt, schema, 7000);
 }
 
-// ============================================================
-// CHALLENGE MY IDEA
-// ONE SEPARATE CALL
-// ============================================================
+
+/* =========================================================
+   CHALLENGE MY IDEA
+   ========================================================= */
 
 async function challengeIdea(
   topic,
@@ -475,124 +353,106 @@ async function challengeIdea(
     );
   }
 
-  const compactAnalyses =
-    compactPaperAnalyses(
-      paperAnalyses
-    );
+  const prompt = `
+You are ResearchLens, an academic research assistant.
 
-  const systemPrompt = `
-You are a research assistant.
+The student has an existing research idea and wants to understand
+how it relates to the supplied literature.
 
-Compare the user's proposed research idea against ONLY
-the uploaded paper analyses and research landscape.
+Research topic:
+${topic}
 
-Identify:
+Research landscape:
+${JSON.stringify(landscape, null, 2)}
 
-- overlap with existing papers
-- specific overlapping papers
-- specific overlap points
-- relative novelty assessment
-- reasoning
-- ways to differentiate the idea
+Paper analyses:
+${JSON.stringify(paperAnalyses, null, 2)}
 
-The novelty assessment is ONLY relative to the uploaded papers.
+Student research idea:
+${ideaText}
 
-Do not claim universal novelty.
+Analyze the idea ONLY against the supplied papers.
 
-Do not invent overlap.
+Rules:
+
+1. Identify genuine overlap with existing work.
+2. Name the papers where overlap exists.
+3. Explain the specific overlap.
+4. Estimate novelty relative ONLY to these supplied papers.
+5. Do not claim that the idea is globally novel.
+6. Suggest concrete ways to differentiate the idea.
+7. Do not invent information about papers.
+8. Keep the response concise and useful for a student.
+
+Return JSON only.
 `;
 
-  const userPayload =
-    JSON.stringify(
-      {
-        topic,
-        paperAnalyses:
-          compactAnalyses,
-        landscape,
-        ideaText
-      },
-      null,
-      2
-    );
-
   const schema = {
-    name: 'ChallengeIdea',
+    type: 'object',
 
-    schema: {
-      type: 'object',
+    properties: {
+      overlapAssessment: {
+        type: 'string'
+      },
 
-      properties: {
-        overlapAssessment: {
-          type: 'string'
-        },
+      overlappingPapers: {
+        type: 'array',
 
-        overlappingPapers: {
-          type: 'array',
+        items: {
+          type: 'object',
 
-          items: {
-            type: 'object',
-
-            properties: {
-              filename: {
-                type: 'string'
-              },
-
-              overlapPoint: {
-                type: 'string'
-              }
+          properties: {
+            filename: {
+              type: 'string'
             },
 
-            required: [
-              'filename',
-              'overlapPoint'
-            ]
-          }
-        },
+            overlapPoint: {
+              type: 'string'
+            }
+          },
 
-        noveltyScore: {
-          type: 'string',
-
-          enum: [
-            'high',
-            'medium',
-            'low'
+          required: [
+            'filename',
+            'overlapPoint'
           ]
-        },
-
-        noveltyReasoning: {
-          type: 'string'
-        },
-
-        differentiationSuggestions: {
-          type: 'array',
-
-          items: {
-            type: 'string'
-          }
         }
       },
 
-      required: [
-        'overlapAssessment',
-        'overlappingPapers',
-        'noveltyScore',
-        'noveltyReasoning',
-        'differentiationSuggestions'
-      ]
-    }
+      noveltyScore: {
+        type: 'string',
+
+        enum: [
+          'high',
+          'medium',
+          'low'
+        ]
+      },
+
+      noveltyReasoning: {
+        type: 'string'
+      },
+
+      differentiationSuggestions: {
+        type: 'array',
+
+        items: {
+          type: 'string'
+        }
+      }
+    },
+
+    required: [
+      'overlapAssessment',
+      'overlappingPapers',
+      'noveltyScore',
+      'noveltyReasoning',
+      'differentiationSuggestions'
+    ]
   };
 
-  return await callGroq(
-    systemPrompt,
-    userPayload,
-    schema,
-    1200
-  );
+  return await callGemini(prompt, schema, 2500);
 }
 
-// ============================================================
-// EXPORTS
-// ============================================================
 
 module.exports = {
   analyzeResearch,

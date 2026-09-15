@@ -11,12 +11,7 @@ const {
 
 const app = express();
 
-const port =
-  process.env.PORT || 3001;
-
-// ============================================================
-// MIDDLEWARE
-// ============================================================
+const port = process.env.PORT || 3001;
 
 app.use(cors());
 
@@ -26,39 +21,33 @@ app.use(
   })
 );
 
-// ============================================================
-// FILE UPLOAD
-// ============================================================
+
+/* =========================================================
+   HEALTH CHECK
+   ========================================================= */
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'ResearchLens backend',
+    ai: 'Gemini'
+  });
+});
+
+
+/* =========================================================
+   PDF UPLOAD
+   ========================================================= */
 
 const upload = multer({
   storage: multer.memoryStorage(),
 
   limits: {
-    fileSize:
-      15 * 1024 * 1024,
-
+    fileSize: 15 * 1024 * 1024,
     files: 5
   }
 });
 
-// ============================================================
-// HEALTH CHECK
-// ============================================================
-
-app.get(
-  '/api/health',
-  (req, res) => {
-    res.json({
-      status: 'ok',
-      service:
-        'ResearchLens backend'
-    });
-  }
-);
-
-// ============================================================
-// UPLOAD + PDF EXTRACTION
-// ============================================================
 
 app.post(
   '/api/upload',
@@ -66,13 +55,11 @@ app.post(
 
   async (req, res) => {
     try {
-      const topic =
-        req.body.topic;
+      const topic = req.body.topic;
 
       if (!topic) {
         return res.status(400).json({
-          error:
-            'Topic is required.'
+          error: 'Topic is required.'
         });
       }
 
@@ -81,25 +68,17 @@ app.post(
         req.files.length === 0
       ) {
         return res.status(400).json({
-          error:
-            'At least one PDF file is required.'
+          error: 'At least one PDF file is required.'
         });
       }
 
       const papers = [];
 
-      for (
-        const file of req.files
-      ) {
+      for (const file of req.files) {
         const paperData = {
-          filename:
-            file.originalname,
-
+          filename: file.originalname,
           pageCount: 0,
-
-          extractedText:
-            null,
-
+          extractedText: null,
           error: null
         };
 
@@ -110,18 +89,13 @@ app.post(
           paperData.error =
             'Invalid file type. Only PDFs are allowed.';
 
-          papers.push(
-            paperData
-          );
-
+          papers.push(paperData);
           continue;
         }
 
         try {
           const data =
-            await pdfParse(
-              file.buffer
-            );
+            await pdfParse(file.buffer);
 
           paperData.extractedText =
             data.text;
@@ -139,9 +113,7 @@ app.post(
             'Failed to extract text from this PDF.';
         }
 
-        papers.push(
-          paperData
-        );
+        papers.push(paperData);
       }
 
       return res.json({
@@ -163,10 +135,10 @@ app.post(
   }
 );
 
-// ============================================================
-// COMPLETE RESEARCH ANALYSIS
-// ONE GROQ CALL
-// ============================================================
+
+/* =========================================================
+   MAIN AI ANALYSIS
+   ========================================================= */
 
 app.post(
   '/api/analyze',
@@ -206,122 +178,71 @@ app.post(
       }
 
       console.log(
-        `Starting analysis of ${validPapers.length} paper(s)...`
+        `Starting Gemini analysis for ${validPapers.length} paper(s)...`
       );
 
-      // ========================================================
-      // ONE AI CALL
-      // ========================================================
-
-      let analysisResult;
-
-      try {
-        analysisResult =
-          await analyzeResearch(
-            topic,
-            validPapers
-          );
-
-      } catch (err) {
-        console.error(
-          'Research analysis failed:',
-          err
+      const analysis =
+        await analyzeResearch(
+          topic,
+          validPapers
         );
 
-        return res.status(500).json({
-          error: err.message
-        });
-      }
+      console.log(
+        'Gemini analysis completed successfully.'
+      );
 
-      // ========================================================
-      // MATCH AI RESULTS TO UPLOADED PAPERS
-      // ========================================================
+      /*
+       * Attach each AI analysis back to
+       * the original paper.
+       */
 
       const analyzedPapers =
-        papers.map(
-          (paper) => {
-            const aiAnalysis =
-              analysisResult.papers?.find(
-                (result) =>
-                  result.filename ===
-                  paper.filename
-              );
+        papers.map((paper) => {
+          const analysisForPaper =
+            analysis.papers?.find(
+              (item) =>
+                item.filename ===
+                paper.filename
+            );
 
-            if (
-              aiAnalysis
-            ) {
-              return {
-                ...paper,
-                analysis:
-                  aiAnalysis,
-                llmError:
-                  null
-              };
-            }
-
-            if (
-              paper.error ||
-              !paper.extractedText
-            ) {
-              return {
-                ...paper,
-                analysis:
-                  null,
-                llmError:
-                  null
-              };
-            }
-
-            return {
-              ...paper,
-              analysis:
-                null,
-              llmError:
-                'No analysis returned for this paper.'
-            };
-          }
-        );
-
-      // ========================================================
-      // REMOVE RAW TEXT
-      // ========================================================
-
-      const cleanPapers =
-        analyzedPapers.map(
-          ({
+          const {
             extractedText,
-            ...rest
-          }) => rest
-        );
+            ...cleanPaper
+          } = paper;
 
-      // ========================================================
-      // RETURN EVERYTHING
-      // ========================================================
+          return {
+            ...cleanPaper,
+
+            analysis:
+              analysisForPaper ||
+              null,
+
+            llmError:
+              analysisForPaper
+                ? null
+                : 'No analysis returned for this paper.'
+          };
+        });
 
       return res.json({
         topic,
 
         landscape:
-          analysisResult.landscape ||
-          null,
+          analysis.landscape || null,
 
-        landscapeError:
-          null,
+        landscapeError: null,
 
         gaps:
-          analysisResult.gaps ||
-          null,
+          analysis.gaps || [],
 
         contradictions:
-          analysisResult.contradictions ||
-          null,
+          analysis.contradictions || [],
 
         opportunities:
-          analysisResult.opportunities ||
-          null,
+          analysis.opportunities || [],
 
         papers:
-          cleanPapers
+          analyzedPapers
       });
 
     } catch (error) {
@@ -332,15 +253,17 @@ app.post(
 
       return res.status(500).json({
         error:
+          error.message ||
           'Internal server error during analysis.'
       });
     }
   }
 );
 
-// ============================================================
-// CHALLENGE MY IDEA
-// ============================================================
+
+/* =========================================================
+   CHALLENGE MY IDEA
+   ========================================================= */
 
 app.post(
   '/api/challenge',
@@ -365,6 +288,10 @@ app.post(
         });
       }
 
+      console.log(
+        'Starting Gemini Challenge My Idea analysis...'
+      );
+
       const result =
         await challengeIdea(
           topic,
@@ -373,9 +300,11 @@ app.post(
           ideaText
         );
 
-      return res.json(
-        result
+      console.log(
+        'Challenge analysis completed successfully.'
       );
+
+      return res.json(result);
 
     } catch (error) {
       console.error(
@@ -392,16 +321,22 @@ app.post(
   }
 );
 
-// ============================================================
-// START SERVER
-// ============================================================
+
+/* =========================================================
+   START SERVER
+   ========================================================= */
 
 app.listen(
   port,
   '0.0.0.0',
+
   () => {
     console.log(
-      `Backend server running on port ${port}`
+      `ResearchLens backend running on port ${port}`
+    );
+
+    console.log(
+      `Gemini model: gemini-2.5-flash`
     );
   }
 );
