@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = 'gemini-2.5-flash';
+const MODEL = 'gemini-3.6-flash';
 
 if (!GEMINI_API_KEY) {
   console.warn('WARNING: GEMINI_API_KEY is not set.');
