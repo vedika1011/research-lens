@@ -336,7 +336,7 @@ app.listen(
     );
 
     console.log(
-      `Gemini model: gemini-2.5-flash`
+      `Gemini model: gemini-3.6-flash`
     );
   }
 );
